@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Skaner pokoju</title>
+  <meta name="description" content="Zeskanuj pomieszczenie goglami Meta Quest i odtwórz je później w VR jako model 3D lub chmurę punktów.">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three/three.module.min.js",
+        "three/addons/": "./vendor/three/addons/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <main id="home" class="screen">
+    <header>
+      <h1>Skaner pokoju</h1>
+      <p class="lead">Zeskanuj pomieszczenie goglami Meta Quest 3 / 3S, zapisz je i odtwórz później w VR.</p>
+    </header>
+
+    <section class="card" id="support"></section>
+
+    <section class="actions">
+      <button id="btn-scan" class="primary big" disabled>
+        <span class="t">Skanuj pokój</span>
+        <span class="s">Otwiera tryb AR z widokiem z kamer</span>
+      </button>
+      <label class="button big" for="file-input">
+        <span class="t">Wczytaj plik</span>
+        <span class="s">.glb lub .json z tej aplikacji</span>
+      </label>
+      <input id="file-input" type="file" accept=".glb,.json,model/gltf-binary,application/json" hidden>
+      <button id="btn-demo" class="big">
+        <span class="t">Przykładowy pokój</span>
+        <span class="s">Do wypróbowania bez gogli</span>
+      </button>
+    </section>
+
+    <section>
+      <h2>Zapisane skany</h2>
+      <ul id="scan-list" class="scan-list"></ul>
+      <p id="scan-empty" class="muted" hidden>Brak zapisanych skanów.</p>
+    </section>
+
+    <details class="card help">
+      <summary>Jak to działa?</summary>
+      <ol>
+        <li>Najlepiej najpierw wykonaj w goglach <b>Space Setup</b> (Ustawienia → Przestrzeń fizyczna → Konfiguracja przestrzeni) — albo zrób to z poziomu aplikacji.</li>
+        <li>Kliknij <b>Skanuj pokój</b> i zezwól stronie na dostęp do danych przestrzennych.</li>
+        <li>Zobaczysz siatkę pokoju nałożoną na rzeczywistość. Jeśli jej brak, naciśnij spust (lub zrób szczypnięcie) — gogle poprowadzą Cię przez skanowanie; rozglądaj się powoli po całym pomieszczeniu.</li>
+        <li>Naciśnij spust, żeby zapisać skan i wyjść. Skan trafia na listę poniżej.</li>
+        <li><b>Odtwórz w VR</b> — stoisz w wirtualnej kopii pokoju. Lewa gałka: chodzenie, prawa: obrót, A/X: bryła / siatka / chmura punktów, B/Y: warstwy.</li>
+      </ol>
+      <p class="muted">Skany zapisywane są w pamięci przeglądarki na tym urządzeniu. Eksportuj je do GLB/PLY, żeby mieć kopię lub otworzyć je w Blenderze, MeshLabie czy CloudCompare.</p>
+    </details>
+  </main>
+
+  <section id="viewer" class="screen" hidden>
+    <div id="canvas-host"></div>
+    <div class="toolbar">
+      <button id="btn-back" title="Wróć do listy">← Lista</button>
+      <h2 id="viewer-title">Skan</h2>
+      <button id="btn-vr" class="primary" disabled>Odtwórz w VR</button>
+      <button id="btn-ar" disabled>Nałóż na pokój (AR)</button>
+    </div>
+    <aside class="side">
+      <div class="group">
+        <h3>Widok</h3>
+        <div class="seg" id="mode-seg">
+          <button data-mode="solid">Bryła</button>
+          <button data-mode="wire">Siatka</button>
+          <button data-mode="points">Punkty</button>
+        </div>
+        <label class="check"><input type="checkbox" id="cut" checked> Przytnij sufit (podgląd)</label>
+      </div>
+      <div class="group">
+        <h3>Warstwy</h3>
+        <div id="layers"></div>
+      </div>
+      <div class="group">
+        <h3>Eksport</h3>
+        <div class="row">
+          <button id="exp-glb" title="Model 3D: Blender, Windows 3D Viewer, przeglądarki">GLB</button>
+          <button id="exp-ply" title="Chmura punktów z widocznych warstw: CloudCompare, MeshLab">PLY</button>
+          <button id="exp-json" title="Pełna kopia do ponownego wczytania">JSON</button>
+        </div>
+      </div>
+      <div class="group">
+        <h3>Skan</h3>
+        <p id="viewer-stats" class="muted small"></p>
+        <div class="row">
+          <button id="btn-rename">Zmień nazwę</button>
+          <button id="btn-delete" class="danger">Usuń</button>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
