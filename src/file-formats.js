@@ -127,6 +127,15 @@ export function exportJSON(scan) {
       positions: toBase64(o.positions),
       indices: toBase64(o.indices),
     })),
+    reference: scan.reference || null,
+    measurements: scan.measurements?.count ? {
+      fields: scan.measurements.fields,
+      count: scan.measurements.count,
+      positions: toBase64(scan.measurements.positions),
+      radii: toBase64(scan.measurements.radii),
+      times: toBase64(scan.measurements.times),
+      values: Object.fromEntries(Object.entries(scan.measurements.values).map(([k, v]) => [k, toBase64(v)])),
+    } : null,
   };
   return new Blob([JSON.stringify(data)], { type: 'application/json' });
 }
@@ -145,7 +154,52 @@ export function importJSON(text) {
     })),
   });
   if (data.createdAt) scan.createdAt = data.createdAt;
+  if (data.reference) scan.reference = data.reference;
+  const m = data.measurements;
+  if (m?.count) {
+    scan.measurements = {
+      fields: m.fields,
+      count: m.count,
+      positions: fromBase64(m.positions, Float32Array),
+      radii: fromBase64(m.radii, Float32Array),
+      times: m.times ? fromBase64(m.times, Float32Array) : new Float32Array(m.count),
+      values: Object.fromEntries(Object.entries(m.values).map(([k, v]) => [k, fromBase64(v, Float32Array)])),
+    };
+  }
   return scan;
+}
+
+// --- PLY z pomiarami (CloudCompare: każde pole jako "scalar field") ---------
+
+export function exportMeasurementsPLY(set) {
+  const n = set.count;
+  const props = [['x'], ['y'], ['z'], ['radius']];
+  for (const f of set.fields) {
+    if (f.components === 1) props.push([f.id, f.id, 0]);
+    else props.push([`${f.id}_x`, f.id, 0], [`${f.id}_y`, f.id, 1], [`${f.id}_z`, f.id, 2], [`${f.id}_magnitude`, f.id, -1]);
+  }
+  const header = 'ply\nformat binary_little_endian 1.0\ncomment room-scanner pomiary pol\n'
+    + set.fields.map((f) => `comment field ${f.id}: ${f.name} [${f.unit}]\n`).join('')
+    + `element vertex ${n}\n` + props.map((p) => `property float ${p[0]}\n`).join('') + 'end_header\n';
+  // PLY: nagłówek ASCII – zamieniamy znaki spoza ASCII (np. µ, °)
+  const headerAscii = header.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ł/g, 'l').replace(/µ/g, 'u').replace(/°/g, 'deg').replace(/[^\x00-\x7f]/g, '?');
+  const body = new DataView(new ArrayBuffer(n * props.length * 4));
+  let o = 0;
+  for (let i = 0; i < n; i++) {
+    for (const p of props) {
+      let v;
+      if (p[0] === 'x' || p[0] === 'y' || p[0] === 'z') v = set.positions[i * 3 + 'xyz'.indexOf(p[0])];
+      else if (p[0] === 'radius') v = set.radii[i];
+      else if (p[2] === -1) v = set.scalar(p[1], i);
+      else {
+        const f = set.field(p[1]);
+        v = set.values[p[1]][i * f.components + p[2]];
+      }
+      body.setFloat32(o, v, true);
+      o += 4;
+    }
+  }
+  return new Blob([new TextEncoder().encode(headerAscii), body.buffer], { type: 'application/octet-stream' });
 }
 
 export async function importFile(file) {

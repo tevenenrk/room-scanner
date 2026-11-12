@@ -10,6 +10,7 @@
 // Podłoga skanu leży na y = 0, bo zbieramy dane w przestrzeni 'local-floor'.
 
 import * as THREE from 'three';
+import { makeDemoMeasurements } from './fields.js';
 
 export const LAYERS = /** @type {const} */ (['global', 'objects', 'planes']);
 
@@ -204,6 +205,7 @@ export class RoomModel extends THREE.Group {
     this.name = 'room-model';
     this.scan = scan;
     this.mode = 'solid';
+    this.opacity = 1;
     this.entries = [];
     this.pointsByLayer = {};
     this.hasGlobal = scan.objects.some((o) => layerOf(o) === 'global');
@@ -255,6 +257,26 @@ export class RoomModel extends THREE.Group {
   setMode(mode) {
     this.mode = mode;
     this.apply();
+  }
+
+  /** Wspólna tablica płaszczyzn cięcia (przekroje). */
+  setClippingPlanes(planes) {
+    for (const m of Object.values(this.materials)) m.clippingPlanes = planes;
+  }
+
+  /** Przezroczystość całego pokoju (1 = nieprzezroczysty). */
+  setOpacity(opacity) {
+    if (this.opacity === opacity) return;
+    this.opacity = opacity;
+    const transparent = opacity < 0.99;
+    for (const [name, m] of Object.entries(this.materials)) {
+      const base = name === 'solidGhost' ? 0.4 : 1;
+      const wasTransparent = m.transparent;
+      m.opacity = base * opacity;
+      m.transparent = transparent || name === 'solidGhost';
+      m.depthWrite = !m.transparent;
+      if (wasTransparent !== m.transparent) m.needsUpdate = true;
+    }
   }
 
   setLayerVisible(layer, visible) {
@@ -367,5 +389,7 @@ export function makeDemoScan() {
   }
   objects.push({ kind: 'mesh', label: 'global mesh', positions: new Float32Array(pos), indices: new Uint32Array(idx) });
 
-  return createScan({ name: 'Przykładowy pokój (demo)', source: 'demo', objects });
+  const scan = createScan({ name: 'Przykładowy pokój z pomiarami (demo)', source: 'demo', objects });
+  scan.measurements = makeDemoMeasurements(scanBounds(scan)).toStorable();
+  return scan;
 }

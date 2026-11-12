@@ -150,3 +150,39 @@ button.danger { color: var(--danger); }
   }
 }
 #viewer-stats { white-space: pre-line; }
+
+/* --- panel pól i przekrojów --- */
+.side { width: 300px; }
+.side details.group > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.side details.group { border-top: 1px solid var(--border); padding-top: 10px; }
+.side details.group:first-child { border-top: 0; padding-top: 0; }
+.field { display: block; font-size: 0.9rem; margin: 8px 0; }
+.field output, .check output { color: var(--accent); font-weight: 600; margin-left: 4px; }
+.field select, .field input[type=range] { display: block; width: 100%; margin-top: 4px; }
+.side input[type=range] { width: 100%; accent-color: var(--accent); }
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  min-height: 38px;
+}
+.side .row { margin-top: 8px; }
+.side .row button { font-size: 0.9rem; padding: 8px 10px; }
+.legend { margin: 6px 0 10px; }
+.legend .bar {
+  height: 14px;
+  border-radius: 7px;
+  background: linear-gradient(90deg, #30123b, #4662d7, #36aaf9, #1ae4b6, #72fe5e, #c8ef34, #faba39, #f66b19, #ca2a04, #7a0403);
+}
+.legend .ends { display: flex; justify-content: space-between; font-size: 0.85rem; margin-top: 2px; }
+.seg button { font-size: 0.85rem; }

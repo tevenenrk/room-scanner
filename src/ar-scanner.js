@@ -222,6 +222,14 @@ export class RoomScanner {
       objects.push({ kind: e.kind, label: e.label, positions, indices: e.local.indices });
     }
     panel.dispose();
-    return objects.length ? createScan({ source: 'quest', objects }) : null;
+    if (!objects.length) return null;
+    const scan = createScan({ source: 'quest', objects });
+    // Punkt odniesienia: położenie siatki pokoju (albo podłogi) w tej sesji.
+    // W kolejnych sesjach AR gogle podadzą jej nowe położenie, co pozwala
+    // nałożyć skan i pomiary dokładnie na prawdziwy pokój.
+    const ref = [...tracked.values()].find((e) => e.hasPose && e.label.toLowerCase().includes('global'))
+      || [...tracked.values()].find((e) => e.hasPose && e.kind === 'plane' && e.label.toLowerCase().includes('floor'));
+    if (ref) scan.reference = { kind: ref.kind, label: ref.label, matrix: Array.from(ref.matrix.elements) };
+    return scan;
   }
 }

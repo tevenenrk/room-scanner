@@ -53,7 +53,8 @@
         <li>Kliknij <b>Skanuj pokój</b> i zezwól stronie na dostęp do danych przestrzennych.</li>
         <li>Zobaczysz siatkę pokoju nałożoną na rzeczywistość. Jeśli jej brak, naciśnij spust (lub zrób szczypnięcie) — gogle poprowadzą Cię przez skanowanie; rozglądaj się powoli po całym pomieszczeniu.</li>
         <li>Naciśnij spust, żeby zapisać skan i wyjść. Skan trafia na listę poniżej.</li>
-        <li><b>Odtwórz w VR</b> — stoisz w wirtualnej kopii pokoju. Lewa gałka: chodzenie, prawa: obrót, A/X: bryła / siatka / chmura punktów, B/Y: warstwy.</li>
+        <li><b>Odtwórz w VR</b> — stoisz w wirtualnej kopii pokoju. Lewa gałka: chodzenie, prawa: obrót. <b>Y</b>: menu (celuj prawym pilotem, spust = klik), <b>X</b>: następne pole, <b>A</b>: widok pola, <b>B</b>: tryb pomiaru.</li>
+        <li><b>Pomiary</b> — w trybie pomiaru trzymaj spust i „maluj” kulką w powietrzu; prawa gałka góra/dół zmienia wielkość kulki. Na razie wartości pochodzą z symulowanego czujnika.</li>
       </ol>
       <p class="muted">Skany zapisywane są w pamięci przeglądarki na tym urządzeniu. Eksportuj je do GLB/PLY, żeby mieć kopię lub otworzyć je w Blenderze, MeshLabie czy CloudCompare.</p>
     </details>
@@ -64,39 +65,91 @@
     <div class="toolbar">
       <button id="btn-back" title="Wróć do listy">← Lista</button>
       <h2 id="viewer-title">Skan</h2>
+      <button id="btn-top" title="Kamera nad pokojem">Z góry</button>
+      <button id="btn-persp" title="Kamera z ukosa">Perspektywa</button>
       <button id="btn-vr" class="primary" disabled>Odtwórz w VR</button>
-      <button id="btn-ar" disabled>Nałóż na pokój (AR)</button>
+      <button id="btn-ar" disabled title="Skan i pomiary na obrazie z kamer, w prawdziwym pokoju">W pokoju (AR)</button>
     </div>
     <aside class="side">
-      <div class="group">
-        <h3>Widok</h3>
+      <details open class="group">
+        <summary>Pola (pomiary)</summary>
+        <label class="field">Pole
+          <select id="field-select"></select>
+        </label>
+        <div class="legend">
+          <div class="bar"></div>
+          <div class="ends"><span id="legend-min"></span><span id="legend-max"></span></div>
+          <div id="legend-info" class="muted small"></div>
+        </div>
+        <label class="field">Widok pola
+          <select id="field-mode"></select>
+        </label>
+        <label class="field">Krycie pól <output id="field-opacity-out"></output>
+          <input type="range" id="field-opacity" min="0.1" max="1" step="0.05">
+        </label>
+        <label class="field">Próg – ukryj niższe wartości <output id="threshold-out"></output>
+          <input type="range" id="threshold" min="0" max="0.95" step="0.05">
+        </label>
+        <label class="field" id="point-size-row">Wielkość kropek <output id="point-size-out"></output>
+          <input type="range" id="point-size" min="0.01" max="0.1" step="0.005">
+        </label>
+        <label class="field" id="voxel-size-row">Wielkość kostki / strzałki <output id="voxel-size-out"></output>
+          <input type="range" id="voxel-size" min="0.1" max="0.6" step="0.05">
+        </label>
+        <div class="row">
+          <button id="btn-demo-meas" title="Dodaje wymyślone pomiary, jakby ktoś machał pilotem po pokoju">+ Symulowane pomiary</button>
+          <button id="btn-clear-meas" class="danger">Wyczyść</button>
+        </div>
+      </details>
+
+      <details open class="group">
+        <summary>Przekroje</summary>
+        <label class="check"><input type="checkbox" id="cut-top"> Utnij dach na wysokości <output id="cut-top-out"></output></label>
+        <input type="range" id="cut-top-h" min="0.1" max="3" step="0.05">
+        <label class="field">Przekrój pionowy
+          <select id="cut-side"></select>
+        </label>
+        <input type="range" id="cut-side-pos" step="0.05">
+        <label class="field">Mapa pola na płaszczyźnie
+          <select id="map-axis"></select>
+        </label>
+        <input type="range" id="map-pos" step="0.05">
+      </details>
+
+      <details open class="group">
+        <summary>Pokój</summary>
         <div class="seg" id="mode-seg">
           <button data-mode="solid">Bryła</button>
           <button data-mode="wire">Siatka</button>
           <button data-mode="points">Punkty</button>
+          <button data-mode="hidden">Ukryj</button>
         </div>
-        <label class="check"><input type="checkbox" id="cut" checked> Przytnij sufit (podgląd)</label>
-      </div>
-      <div class="group">
-        <h3>Warstwy</h3>
+        <label class="field">Krycie pokoju <output id="room-opacity-out"></output>
+          <input type="range" id="room-opacity" min="0.1" max="1" step="0.05">
+        </label>
         <div id="layers"></div>
-      </div>
-      <div class="group">
-        <h3>Eksport</h3>
+      </details>
+
+      <details class="group">
+        <summary>Eksport</summary>
         <div class="row">
           <button id="exp-glb" title="Model 3D: Blender, Windows 3D Viewer, przeglądarki">GLB</button>
-          <button id="exp-ply" title="Chmura punktów z widocznych warstw: CloudCompare, MeshLab">PLY</button>
-          <button id="exp-json" title="Pełna kopia do ponownego wczytania">JSON</button>
+          <button id="exp-ply" title="Chmura punktów pokoju z widocznych warstw: CloudCompare, MeshLab">PLY pokoju</button>
         </div>
-      </div>
-      <div class="group">
-        <h3>Skan</h3>
+        <div class="row">
+          <button id="exp-meas" title="Pomiary jako chmura punktów z wartościami pól (CloudCompare: Scalar fields)">PLY pomiarów</button>
+          <button id="exp-json" title="Pełna kopia (pokój + pomiary) do ponownego wczytania">JSON</button>
+        </div>
+      </details>
+
+      <details class="group">
+        <summary>Skan</summary>
         <p id="viewer-stats" class="muted small"></p>
         <div class="row">
           <button id="btn-rename">Zmień nazwę</button>
           <button id="btn-delete" class="danger">Usuń</button>
         </div>
-      </div>
+      </details>
     </aside>
   </section>
 

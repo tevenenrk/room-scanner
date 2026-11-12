@@ -1,9 +1,13 @@
 import * as THREE from 'three';
 import { RoomScanner, isImmersiveSupported } from './ar-scanner.js';
-import { ScanViewer } from './viewer.js';
+import {
+  ScanViewer, FIELD_MODES, FIELD_MODE_NAMES, SIDE_CUTS, SIDE_CUT_NAMES, MAP_AXES, MAP_AXIS_NAMES,
+} from './viewer.js';
 import { LAYERS, LAYER_NAMES, layerOf, makeDemoScan, scanStats } from './scan-model.js';
 import { listScans, saveScan, deleteScan, getScan, requestPersistence } from './storage.js';
-import { downloadBlob, exportGLB, exportJSON, exportPLY, importFile, safeFileName } from './file-formats.js';
+import {
+  downloadBlob, exportGLB, exportJSON, exportPLY, exportMeasurementsPLY, importFile, safeFileName,
+} from './file-formats.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -14,6 +18,7 @@ $('#canvas-host').appendChild(renderer.domElement);
 
 const viewer = new ScanViewer(renderer, $('#canvas-host'));
 const scanner = new RoomScanner(renderer);
+viewer.onSave = (scan) => saveScan(scan);
 
 let current = null; // aktualnie otwarty skan
 let support = { ar: false, vr: false };
@@ -34,8 +39,11 @@ function fmtDate(ms) {
   return new Date(ms).toLocaleString('pl-PL', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-function fmtStats(s) {
-  return `${s.objects} obiektów · ${s.triangles.toLocaleString('pl-PL')} trójkątów · ${s.area.toFixed(1)} m² powierzchni`;
+function fmtStats(scan) {
+  const s = scanStats(scan);
+  const meas = scan.measurements?.count || 0;
+  return `${s.objects} obiektów · ${s.triangles.toLocaleString('pl-PL')} trójkątów · ${s.area.toFixed(1)} m²`
+    + (meas ? ` · ${meas.toLocaleString('pl-PL')} pomiarów` : '');
 }
 
 const SOURCE_NAMES = { quest: 'Quest', demo: 'demo', import: 'import' };
@@ -51,13 +59,13 @@ async function renderSupport() {
     el.innerHTML = 'Strona nie jest otwarta przez <b>HTTPS</b> — gogle nie pozwolą uruchomić WebXR. Otwórz ją z adresu https:// (np. GitHub Pages).';
   } else if (ar) {
     el.className = 'card ok';
-    el.textContent = 'Gogle gotowe: możesz skanować pokój i odtwarzać skany w VR.';
+    el.textContent = 'Gogle gotowe: możesz skanować pokój, robić pomiary i odtwarzać skany w VR.';
   } else if (vr) {
     el.className = 'card warn';
     el.textContent = 'To urządzenie obsługuje VR, ale nie tryb AR — skanowanie niedostępne, odtwarzanie działa.';
   } else {
     el.className = 'card';
-    el.innerHTML = 'Brak WebXR w tej przeglądarce. Otwórz tę stronę w <b>przeglądarce Meta Quest</b>, aby skanować. Tutaj możesz oglądać i eksportować skany w 3D.';
+    el.innerHTML = 'Brak WebXR w tej przeglądarce. Otwórz tę stronę w <b>przeglądarce Meta Quest</b>, aby skanować. Tutaj możesz oglądać skany i pomiary w 3D.';
   }
   $('#btn-scan').disabled = !ar;
   $('#btn-vr').disabled = !vr;
@@ -70,7 +78,6 @@ async function renderList() {
   list.replaceChildren();
   $('#scan-empty').hidden = scans.length > 0;
   for (const scan of scans) {
-    const s = scanStats(scan);
     const li = document.createElement('li');
     const info = document.createElement('div');
     info.className = 'info';
@@ -79,7 +86,7 @@ async function renderList() {
     name.textContent = scan.name;
     const meta = document.createElement('div');
     meta.className = 'meta';
-    meta.textContent = `${fmtDate(scan.createdAt)} · ${SOURCE_NAMES[scan.source] || scan.source} · ${fmtStats(s)}`;
+    meta.textContent = `${fmtDate(scan.createdAt)} · ${SOURCE_NAMES[scan.source] || scan.source} · ${fmtStats(scan)}`;
     info.append(name, meta);
     const open = document.createElement('button');
     open.textContent = 'Otwórz';
@@ -98,7 +105,8 @@ async function renderList() {
   }
 }
 
-function showHome() {
+async function showHome() {
+  if (viewer.hasUnsavedMeasurements()) await viewer.save();
   viewer.stop();
   current = null;
   $('#viewer').hidden = true;
@@ -106,20 +114,38 @@ function showHome() {
   renderList();
 }
 
-// --- podgląd skanu -----------------------------------------------------------
+// --- panel podglądu ----------------------------------------------------------
 
-function syncViewerControls() {
-  const model = viewer.model;
-  if (!model) return;
-  for (const b of document.querySelectorAll('#mode-seg button')) {
-    b.classList.toggle('active', b.dataset.mode === model.mode);
-  }
-  for (const input of document.querySelectorAll('#layers input')) {
-    input.checked = model.visibleLayers[input.dataset.layer];
-  }
+function fillSelect(sel, values, names) {
+  sel.replaceChildren(...values.map((v) => {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = names[v] ?? v;
+    return o;
+  }));
+}
+fillSelect($('#field-mode'), FIELD_MODES, FIELD_MODE_NAMES);
+fillSelect($('#cut-side'), SIDE_CUTS, SIDE_CUT_NAMES);
+fillSelect($('#map-axis'), MAP_AXES, MAP_AXIS_NAMES);
+
+// Granice zaokrąglone do kroku suwaka (0,05 m), żeby wartości były "okrągłe".
+function setRange(input, min, max) {
+  input.min = (Math.floor(min * 20) / 20).toFixed(2);
+  input.max = (Math.ceil(max * 20) / 20).toFixed(2);
 }
 
-function buildLayerControls() {
+/** Uzupełnia kontrolki, które zależą od skanu (pola, zakresy suwaków, warstwy). */
+function buildViewerControls() {
+  const fields = viewer.meas.fields;
+  fillSelect($('#field-select'), fields.map((f) => f.id), Object.fromEntries(fields.map((f) => [f.id, `${f.name} [${f.unit}]`])));
+
+  const b = viewer.bounds;
+  setRange($('#cut-top-h'), Math.max(0.1, b.min.y), b.max.y + 0.1);
+  const axis = viewer.state.cutSide.mode[0];
+  setRange($('#cut-side-pos'), axis === 'z' ? b.min.z : b.min.x, axis === 'z' ? b.max.z : b.max.x);
+  const ma = viewer.state.map.axis;
+  setRange($('#map-pos'), ma === 'x' ? b.min.x : ma === 'z' ? b.min.z : b.min.y, ma === 'x' ? b.max.x : ma === 'z' ? b.max.z : b.max.y);
+
   const counts = { global: 0, objects: 0, planes: 0 };
   for (const o of current.objects) counts[layerOf(o)]++;
   const host = $('#layers');
@@ -131,7 +157,10 @@ function buildLayerControls() {
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.dataset.layer = layer;
-    input.addEventListener('change', () => viewer.setLayerVisible(layer, input.checked));
+    input.addEventListener('change', () => {
+      viewer.model.setLayerVisible(layer, input.checked);
+      syncViewerControls();
+    });
     const count = document.createElement('span');
     count.className = 'count';
     count.textContent = `(${counts[layer]})`;
@@ -139,6 +168,51 @@ function buildLayerControls() {
     host.append(label);
   }
 }
+
+function syncViewerControls() {
+  if (!viewer.model) return;
+  const s = viewer.state;
+  for (const b of document.querySelectorAll('#mode-seg button')) b.classList.toggle('active', b.dataset.mode === s.roomMode);
+  for (const input of document.querySelectorAll('#layers input')) input.checked = viewer.model.visibleLayers[input.dataset.layer];
+
+  $('#field-select').value = s.fieldId ?? '';
+  $('#field-mode').value = s.fieldMode;
+  $('#field-opacity').value = s.fieldOpacity;
+  $('#field-opacity-out').textContent = `${Math.round(s.fieldOpacity * 100)}%`;
+  $('#threshold').value = s.threshold;
+  $('#threshold-out').textContent = `${Math.round(s.threshold * 100)}%`;
+  $('#point-size').value = s.pointSize;
+  $('#point-size-out').textContent = `${(s.pointSize * 100).toFixed(1)} cm`;
+  $('#voxel-size').value = s.voxelSize;
+  $('#voxel-size-out').textContent = `${Math.round(s.voxelSize * 100)} cm`;
+  $('#point-size-row').hidden = s.fieldMode !== 'dots';
+  $('#voxel-size-row').hidden = !['voxels', 'arrows'].includes(s.fieldMode) && s.map.axis === 'off';
+  $('#room-opacity').value = s.roomOpacity;
+  $('#room-opacity-out').textContent = `${Math.round(s.roomOpacity * 100)}%`;
+
+  $('#cut-top').checked = s.cutTop.on;
+  $('#cut-top-h').value = s.cutTop.h;
+  $('#cut-top-h').disabled = !s.cutTop.on;
+  $('#cut-top-out').textContent = `${s.cutTop.h.toFixed(2)} m`;
+  $('#cut-side').value = s.cutSide.mode;
+  $('#cut-side-pos').hidden = s.cutSide.mode === 'off';
+  $('#cut-side-pos').value = s.cutSide.pos;
+  $('#map-axis').value = s.map.axis;
+  $('#map-pos').hidden = s.map.axis === 'off';
+  $('#map-pos').value = s.map.pos;
+
+  const L = viewer.legendInfo();
+  $('#legend-min').textContent = L.minText;
+  $('#legend-max').textContent = L.maxText;
+  const def = viewer.fieldDef();
+  let info = `${viewer.meas.count.toLocaleString('pl-PL')} pomiarów`;
+  if (def?.components === 3) info += ' · kolor = długość wektora, strzałki = kierunek';
+  else if (s.fieldMode === 'arrows') info += ' · strzałki pokazują, w którą stronę wartość rośnie';
+  $('#legend-info').textContent = info;
+  $('#btn-clear-meas').disabled = viewer.meas.count === 0;
+}
+
+viewer.onChange = syncViewerControls;
 
 async function openScan(id) {
   const scan = await getScan(id);
@@ -151,20 +225,18 @@ function showScan(scan) {
   $('#home').hidden = true;
   $('#viewer').hidden = false;
   $('#viewer-title').textContent = scan.name;
-  $('#viewer-stats').textContent = `${fmtDate(scan.createdAt)}\n${fmtStats(scanStats(scan))}`;
-  viewer.setCut($('#cut').checked);
+  $('#viewer-stats').textContent = `${fmtDate(scan.createdAt)}\n${fmtStats(scan)}`;
   viewer.show(scan);
-  buildLayerControls();
+  buildViewerControls();
   syncViewerControls();
 }
-
-viewer.onChange = syncViewerControls;
 
 async function enterXR(mode) {
   if (!viewer.model || busy) return;
   busy = true;
   try {
     await viewer.enterXR(mode);
+    $('#viewer-stats').textContent = `${fmtDate(current.createdAt)}\n${fmtStats(current)}`;
   } catch (err) {
     console.error(err);
     toast(`Nie udało się uruchomić ${mode === 'immersive-ar' ? 'AR' : 'VR'}: ${err.message || err}`);
@@ -217,35 +289,85 @@ $('#file-input').addEventListener('change', async (e) => {
   }
 });
 
-// --- przyciski podglądu ------------------------------------------------------
+// --- kontrolki podglądu ------------------------------------------------------
 
-$('#btn-back').addEventListener('click', showHome);
-$('#btn-vr').addEventListener('click', () => enterXR('immersive-vr'));
-$('#btn-ar').addEventListener('click', () => enterXR('immersive-ar'));
-$('#cut').addEventListener('change', (e) => viewer.setCut(e.target.checked));
+const num = (sel) => parseFloat($(sel).value);
+const on = (sel, ev, fn) => $(sel).addEventListener(ev, fn);
+
+on('#btn-back', 'click', showHome);
+on('#btn-vr', 'click', () => enterXR('immersive-vr'));
+on('#btn-ar', 'click', () => enterXR('immersive-ar'));
+on('#btn-top', 'click', () => viewer.viewTop());
+on('#btn-persp', 'click', () => viewer.viewPerspective());
 for (const b of document.querySelectorAll('#mode-seg button')) {
-  b.addEventListener('click', () => viewer.setMode(b.dataset.mode));
+  b.addEventListener('click', () => viewer.set({ roomMode: b.dataset.mode }));
 }
+on('#room-opacity', 'input', () => viewer.set({ roomOpacity: num('#room-opacity') }));
+on('#field-select', 'change', () => viewer.set({ fieldId: $('#field-select').value }));
+on('#field-mode', 'change', () => viewer.set({ fieldMode: $('#field-mode').value }));
+on('#field-opacity', 'input', () => viewer.set({ fieldOpacity: num('#field-opacity') }));
+on('#threshold', 'input', () => viewer.set({ threshold: num('#threshold') }));
+on('#point-size', 'input', () => viewer.set({ pointSize: num('#point-size') }));
+on('#voxel-size', 'input', () => viewer.set({ voxelSize: num('#voxel-size') }));
+on('#cut-top', 'change', () => viewer.set({ cutTop: { on: $('#cut-top').checked } }));
+on('#cut-top-h', 'input', () => viewer.set({ cutTop: { h: num('#cut-top-h') } }));
+on('#cut-side', 'change', () => {
+  const mode = $('#cut-side').value;
+  const b = viewer.bounds;
+  const c = b.getCenter(new THREE.Vector3());
+  viewer.set({ cutSide: { mode, pos: +(mode[0] === 'z' ? c.z : c.x).toFixed(2) } });
+  buildViewerControls();
+  syncViewerControls();
+});
+on('#cut-side-pos', 'input', () => viewer.set({ cutSide: { pos: num('#cut-side-pos') } }));
+on('#map-axis', 'change', () => {
+  const axis = $('#map-axis').value;
+  const c = viewer.bounds.getCenter(new THREE.Vector3());
+  viewer.set({ map: { axis, pos: +(axis === 'y' ? 1 : axis === 'x' ? c.x : c.z).toFixed(2) } });
+  buildViewerControls();
+  syncViewerControls();
+});
+on('#map-pos', 'input', () => viewer.set({ map: { pos: num('#map-pos') } }));
 
-$('#exp-glb').addEventListener('click', async () => {
+on('#btn-demo-meas', 'click', async () => {
+  viewer.addDemoMeasurements();
+  await viewer.save();
+  buildViewerControls();
+  syncViewerControls();
+  $('#viewer-stats').textContent = `${fmtDate(current.createdAt)}\n${fmtStats(current)}`;
+  toast(`Dodano symulowane pomiary (razem: ${viewer.meas.count.toLocaleString('pl-PL')}).`);
+});
+on('#btn-clear-meas', 'click', async () => {
+  if (!confirm('Usunąć wszystkie pomiary z tego skanu?')) return;
+  viewer.clearMeasurements();
+  await viewer.save();
+  $('#viewer-stats').textContent = `${fmtDate(current.createdAt)}\n${fmtStats(current)}`;
+});
+
+on('#exp-glb', 'click', async () => {
   try {
     downloadBlob(await exportGLB(current), `${safeFileName(current.name)}.glb`);
   } catch (err) {
     toast(`Eksport GLB nie powiódł się: ${err.message || err}`);
   }
 });
-$('#exp-ply').addEventListener('click', () => {
+on('#exp-ply', 'click', () => {
   const objects = viewer.model.visibleObjects();
-  if (!objects.length) { toast('Włącz przynajmniej jedną warstwę.'); return; }
+  if (!objects.length) { toast('Włącz przynajmniej jedną warstwę pokoju.'); return; }
   const { blob, points } = exportPLY(objects);
   downloadBlob(blob, `${safeFileName(current.name)}.ply`);
   toast(`Chmura punktów: ${points.toLocaleString('pl-PL')} punktów`);
 });
-$('#exp-json').addEventListener('click', () => {
+on('#exp-meas', 'click', () => {
+  if (!viewer.meas.count) { toast('Ten skan nie ma pomiarów.'); return; }
+  downloadBlob(exportMeasurementsPLY(viewer.meas), `${safeFileName(current.name)}_pomiary.ply`);
+});
+on('#exp-json', 'click', async () => {
+  if (viewer.hasUnsavedMeasurements()) await viewer.save();
   downloadBlob(exportJSON(current), `${safeFileName(current.name)}.json`);
 });
 
-$('#btn-rename').addEventListener('click', async () => {
+on('#btn-rename', 'click', async () => {
   const name = prompt('Nowa nazwa skanu:', current.name);
   if (!name || !name.trim()) return;
   current.name = name.trim();
@@ -253,9 +375,10 @@ $('#btn-rename').addEventListener('click', async () => {
   $('#viewer-title').textContent = current.name;
 });
 
-$('#btn-delete').addEventListener('click', async () => {
+on('#btn-delete', 'click', async () => {
   if (!confirm(`Usunąć skan „${current.name}”?`)) return;
   await deleteScan(current.id);
+  viewer.savedVersion = viewer.meas.version; // nie zapisuj ponownie usuniętego skanu
   toast('Skan usunięty.');
   showHome();
 });
