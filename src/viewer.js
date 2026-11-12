@@ -28,7 +28,7 @@ function defaultState() {
     fieldId: null,
     fieldMode: 'dots',
     fieldOpacity: 0.9,
-    threshold: 0,
+    band: { lo: 0, hi: 1, invert: false },
     pointSize: 0.035,
     voxelSize: 0.25,
     cutTop: { on: true, h: 2.2 },
@@ -167,7 +167,7 @@ export class ScanViewer {
     this.model.setMode(s.roomMode);
     this.model.setOpacity(s.roomOpacity);
     this.fieldView.configure({
-      fieldId: s.fieldId, mode: s.fieldMode, opacity: s.fieldOpacity, threshold: s.threshold,
+      fieldId: s.fieldId, mode: s.fieldMode, opacity: s.fieldOpacity, band: s.band,
       pointSize: s.pointSize, voxelSize: s.voxelSize, map: s.map,
     });
     this.updateContentMatrix();
@@ -203,6 +203,19 @@ export class ScanViewer {
 
   fieldDef() { return this.meas?.field(this.state.fieldId); }
 
+  /** Wartość granicy zakresu ('lo' | 'hi') w jednostkach pola. */
+  bandValue(which) {
+    const r = this.fieldView.getRange();
+    return r.min + this.state.band[which] * (r.max - r.min);
+  }
+
+  bandValueText(which) {
+    const def = this.fieldDef();
+    const edge = which === 'lo' ? this.state.band.lo <= 0 : this.state.band.hi >= 1;
+    if (edge) return which === 'lo' ? 'min' : 'max';
+    return formatValue(def, this.bandValue(which));
+  }
+
   legendInfo() {
     const def = this.fieldDef();
     if (!def) return { name: 'Brak pól', minText: '', maxText: '', unit: '' };
@@ -212,6 +225,7 @@ export class ScanViewer {
       name: `${def.name}${extra}`,
       unit: def.unit,
       min: r.min, max: r.max,
+      band: this.state.band,
       minText: r.count ? formatValue(def, r.min) : 'brak pomiarów',
       maxText: r.count ? formatValue(def, r.max) : '',
       count: r.count,
@@ -336,9 +350,16 @@ export class ScanViewer {
       { type: 'stepper', label: 'Krycie pól', value: () => pct(s().fieldOpacity),
         dec: () => this.set({ fieldOpacity: clamp(+(s().fieldOpacity - 0.1).toFixed(2), 0.1, 1) }),
         inc: () => this.set({ fieldOpacity: clamp(+(s().fieldOpacity + 0.1).toFixed(2), 0.1, 1) }) },
-      { type: 'stepper', label: 'Próg (ukryj niskie)', value: () => pct(s().threshold),
-        dec: () => this.set({ threshold: clamp(+(s().threshold - 0.1).toFixed(2), 0, 0.9) }),
-        inc: () => this.set({ threshold: clamp(+(s().threshold + 0.1).toFixed(2), 0, 0.9) }) },
+      { type: 'stepper', label: 'Pokaż od', value: () => this.bandValueText('lo'),
+        dec: () => this.set({ band: { lo: clamp(+(s().band.lo - 0.05).toFixed(2), 0, s().band.hi - 0.05) } }),
+        inc: () => this.set({ band: { lo: clamp(+(s().band.lo + 0.05).toFixed(2), 0, s().band.hi - 0.05) } }) },
+      { type: 'stepper', label: 'Pokaż do', value: () => this.bandValueText('hi'),
+        dec: () => this.set({ band: { hi: clamp(+(s().band.hi - 0.05).toFixed(2), s().band.lo + 0.05, 1) } }),
+        inc: () => this.set({ band: { hi: clamp(+(s().band.hi + 0.05).toFixed(2), s().band.lo + 0.05, 1) } }) },
+      { type: 'buttons', items: [
+        { label: 'Wytnij zakres (odwróć)', active: () => s().band.invert, onClick: () => this.set({ band: { invert: !s().band.invert } }) },
+        { label: 'Cała skala', onClick: () => this.set({ band: { lo: 0, hi: 1, invert: false } }) },
+      ] },
       { type: 'stepper', label: 'Wielkość kostki/strzałki', value: () => `${Math.round(s().voxelSize * 100)} cm`,
         dec: () => this.set({ voxelSize: clamp(+(s().voxelSize - 0.05).toFixed(2), 0.1, 0.6) }),
         inc: () => this.set({ voxelSize: clamp(+(s().voxelSize + 0.05).toFixed(2), 0.1, 0.6) }) },
@@ -640,7 +661,7 @@ export class ScanViewer {
         : this.state.measuring ? `● Pomiar: spust = rysuj, kulka ${Math.round(this.state.brush * 100)} cm`
           : isAR && refMatrix ? (xr.aligned ? 'Wyrównano do pokoju' : 'Szukam pokoju do wyrównania...')
             : `Pomiarów: ${this.meas.count}  ·  Y = menu`;
-      legend.set({ name: L.name, minText: L.minText, maxText: L.maxText, probeText, status, t });
+      legend.set({ name: L.name, minText: L.minText, maxText: L.maxText, probeText, status, t, band: L.band });
       // Legenda nad lewym pilotem albo w dolnej części widoku.
       const left = [...session.inputSources].find((x) => x.handedness === 'left');
       const lp = left && (left.gripSpace || left.targetRaySpace) && frame.getPose(left.gripSpace || left.targetRaySpace, ref);

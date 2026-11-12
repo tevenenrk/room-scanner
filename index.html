@@ -77,7 +77,7 @@
           <select id="field-select"></select>
         </label>
         <div class="legend">
-          <div class="bar"></div>
+          <div class="bar"><div class="mask" id="mask-a"></div><div class="mask" id="mask-b"></div></div>
           <div class="ends"><span id="legend-min"></span><span id="legend-max"></span></div>
           <div id="legend-info" class="muted small"></div>
         </div>
@@ -87,9 +87,17 @@
         <label class="field">Krycie pól <output id="field-opacity-out"></output>
           <input type="range" id="field-opacity" min="0.1" max="1" step="0.05">
         </label>
-        <label class="field">Próg – ukryj niższe wartości <output id="threshold-out"></output>
-          <input type="range" id="threshold" min="0" max="0.95" step="0.05">
-        </label>
+        <div class="field band">
+          <div>Zakres widocznych wartości</div>
+          <label>od <output id="band-lo-out"></output>
+            <input type="range" id="band-lo" min="0" max="1" step="0.01">
+          </label>
+          <label>do <output id="band-hi-out"></output>
+            <input type="range" id="band-hi" min="0" max="1" step="0.01">
+          </label>
+          <label class="check"><input type="checkbox" id="band-invert"> Wytnij ten zakres (pokaż resztę)</label>
+          <button id="band-reset" class="small-btn">Cała skala</button>
+        </div>
         <label class="field" id="point-size-row">Wielkość kropek <output id="point-size-out"></output>
           <input type="range" id="point-size" min="0.01" max="0.1" step="0.005">
         </label>

@@ -52,7 +52,7 @@ export class FieldView extends THREE.Group {
     this.set = null;
     this.bounds = new THREE.Box3();
     this.cfg = {
-      fieldId: null, mode: 'dots', opacity: 0.9, threshold: 0,
+      fieldId: null, mode: 'dots', opacity: 0.9, band: { lo: 0, hi: 1, invert: false },
       pointSize: 0.035, voxelSize: 0.25, map: { axis: 'off', pos: 1 },
     };
     this.dirty = true;
@@ -92,10 +92,11 @@ export class FieldView extends THREE.Group {
 
   configure(cfg) {
     const prev = this.cfg;
-    const next = { ...prev, ...cfg, map: { ...prev.map, ...(cfg.map || {}) } };
+    const next = { ...prev, ...cfg, map: { ...prev.map, ...(cfg.map || {}) }, band: { ...prev.band, ...(cfg.band || {}) } };
     const changed = (k) => prev[k] !== next[k];
-    if (changed('fieldId') || changed('mode') || changed('threshold') || changed('voxelSize')) this.dirty = true;
-    if (changed('fieldId') || changed('voxelSize') || prev.map.axis !== next.map.axis || prev.map.pos !== next.map.pos) this.mapDirty = true;
+    const bandChanged = ['lo', 'hi', 'invert'].some((k) => prev.band[k] !== next.band[k]);
+    if (changed('fieldId') || changed('mode') || bandChanged || changed('voxelSize')) this.dirty = true;
+    if (changed('fieldId') || changed('voxelSize') || bandChanged || prev.map.axis !== next.map.axis || prev.map.pos !== next.map.pos) this.mapDirty = true;
     this.cfg = next;
     this.applyMaterial();
   }
@@ -153,6 +154,18 @@ export class FieldView extends THREE.Group {
     return (v - min) / (max - min);
   }
 
+  /**
+   * Czy wartość (znormalizowana do skali kolorów) jest widoczna.
+   * Zakres [lo, hi] zostaje; z invert = true ten zakres jest wycinany.
+   * Wartości poza skalą (poniżej 2. / powyżej 98. percentyla) należą do skrajnych końców.
+   */
+  inBand(t) {
+    if (!Number.isFinite(t)) return false;
+    const { lo, hi, invert } = this.cfg.band;
+    const inside = (t >= lo || lo <= 0) && (t <= hi || hi >= 1);
+    return invert ? !inside : inside;
+  }
+
   update(now = performance.now(), force = false) {
     if (!this.set) return;
     if (this.dirty && (force || now - this.lastBuild > 250)) {
@@ -189,7 +202,7 @@ export class FieldView extends THREE.Group {
       let n = 0;
       for (let i = 0; i < set.count; i++) {
         const t = this.norm(set.scalar(cfg.fieldId, i));
-        if (!Number.isFinite(t) || t < cfg.threshold) continue;
+        if (!this.inBand(t)) continue;
         pos.set(set.positions.subarray(i * 3, i * 3 + 3), n * 3);
         turboColor(t, color).toArray(col, n * 3);
         n++;
@@ -202,7 +215,7 @@ export class FieldView extends THREE.Group {
       const idx = [];
       for (let i = 0; i < set.count; i++) {
         const t = this.norm(set.scalar(cfg.fieldId, i));
-        if (Number.isFinite(t) && t >= cfg.threshold) idx.push(i);
+        if (this.inBand(t)) idx.push(i);
       }
       const stride = Math.max(1, Math.ceil(idx.length / MAX_SPHERES));
       const chosen = idx.filter((_, k) => k % stride === 0);
@@ -218,7 +231,7 @@ export class FieldView extends THREE.Group {
       this.current = mesh;
     } else {
       const vox = this.getVox();
-      const cells = vox.cells.filter((c) => this.norm(c.value) >= cfg.threshold);
+      const cells = vox.cells.filter((c) => this.inBand(this.norm(c.value)));
       const isArrows = cfg.mode === 'arrows';
       const mesh = new THREE.InstancedMesh(isArrows ? this.geoms.arrow : this.geoms.box, this.materials.inst, Math.max(1, cells.length));
       const m = new THREE.Matrix4();
@@ -308,7 +321,7 @@ export class FieldView extends THREE.Group {
         const t = this.norm(v);
         const [r, g, bb] = turboRGB(t);
         data[o] = r * 255; data[o + 1] = g * 255; data[o + 2] = bb * 255;
-        data[o + 3] = t >= this.cfg.threshold ? 255 : 0;
+        data[o + 3] = this.inBand(t) ? 255 : 0;
       }
     }
     const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat);

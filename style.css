@@ -186,3 +186,9 @@ select {
 }
 .legend .ends { display: flex; justify-content: space-between; font-size: 0.85rem; margin-top: 2px; }
 .seg button { font-size: 0.85rem; }
+
+.legend .bar { position: relative; overflow: hidden; }
+.legend .mask { position: absolute; top: 0; bottom: 0; background: rgba(18, 21, 27, 0.82); }
+.band label { display: block; margin-top: 4px; }
+.band input[type=range] { display: block; width: 100%; }
+.small-btn { min-height: 32px; padding: 4px 10px; font-size: 0.85rem; margin-top: 6px; }

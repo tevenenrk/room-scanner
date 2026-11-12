@@ -19,10 +19,17 @@ function makeCanvasMesh(widthM, pxW, pxH) {
   return { mesh, canvas, texture, ctx: canvas.getContext('2d') };
 }
 
-function drawGradient(ctx, x, y, w, h) {
+/** Pasek skali kolorów; części poza widocznym zakresem (band) są przyciemnione. */
+function drawGradient(ctx, x, y, w, h, band) {
   for (let i = 0; i < w; i++) {
-    const [r, g, b] = turboRGB(i / (w - 1));
-    ctx.fillStyle = `rgb(${r * 255 | 0},${g * 255 | 0},${b * 255 | 0})`;
+    const t = i / (w - 1);
+    const [r, g, b] = turboRGB(t);
+    let k = 1;
+    if (band) {
+      const inside = (t >= band.lo || band.lo <= 0) && (t <= band.hi || band.hi >= 1);
+      if (band.invert ? inside : !inside) k = 0.18;
+    }
+    ctx.fillStyle = `rgb(${r * 255 * k | 0},${g * 255 * k | 0},${b * 255 * k | 0})`;
     ctx.fillRect(x + i, y, 1, h);
   }
 }
@@ -124,7 +131,7 @@ export class XRMenu {
         ctx.font = 'bold 40px system-ui, sans-serif';
         ctx.textAlign = 'left';
         ctx.fillText(L.name, this.pad + 8, y + 26, W - 2 * this.pad);
-        drawGradient(ctx, this.pad + 8, y + 58, W - 2 * this.pad - 16, 26);
+        drawGradient(ctx, this.pad + 8, y + 58, W - 2 * this.pad - 16, 26, L.band);
         ctx.font = '28px system-ui, sans-serif';
         ctx.fillStyle = '#f2f4f8';
         ctx.fillText(L.minText, this.pad + 8, y + 104);
@@ -176,8 +183,8 @@ export class LegendPanel {
     this.last = '';
   }
 
-  set({ name, minText, maxText, probeText, status, t }) {
-    const key = [name, minText, maxText, probeText, status, t?.toFixed(3)].join('|');
+  set({ name, minText, maxText, probeText, status, t, band }) {
+    const key = [name, minText, maxText, probeText, status, t?.toFixed(3), band?.lo, band?.hi, band?.invert].join('|');
     if (key === this.last) return;
     this.last = key;
     const { ctx } = this;
@@ -191,7 +198,7 @@ export class LegendPanel {
     ctx.fillStyle = '#9fdcff';
     ctx.font = 'bold 34px system-ui, sans-serif';
     ctx.fillText(name, 18, 32, W - 36);
-    drawGradient(ctx, 18, 62, W - 36, 24);
+    drawGradient(ctx, 18, 62, W - 36, 24, band);
     if (Number.isFinite(t)) {
       const x = 18 + Math.min(1, Math.max(0, t)) * (W - 36);
       ctx.fillStyle = '#ffffff';

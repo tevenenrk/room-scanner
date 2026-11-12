@@ -50,8 +50,11 @@ przyciskiem „+ Symulowane pomiary”.
   (np. gdzie WiFi jest silniejsze),
 - **Mapa pola na płaszczyźnie**: kolorowa mapa w przekroju poziomym albo pionowym.
 
-Do tego krycie (przezroczystość) pól i pokoju, **próg** (ukrywa niższe wartości, zostają
-„gorące” miejsca) i skala kolorów z wartościami min/max.
+Do tego krycie (przezroczystość) pól i pokoju oraz skala kolorów z wartościami min/max.
+
+**Zakres widocznych wartości** („od” / „do”) pozwala wyciąć dowolny fragment spektrum:
+np. tylko najsilniejsze WiFi, tylko średnie wartości, albo (z opcją **„Wytnij ten zakres”**)
+wszystko oprócz środka skali. Ukryte części są przyciemnione na pasku skali.
 
 ### Przekroje
 
@@ -78,7 +81,7 @@ Przekroje tną zarówno pokój, jak i pola.
 
 Nad lewym pilotem jest tabliczka ze skalą kolorów i wartością pola w miejscu kulki:
 wartość z czujnika w trybie pomiaru, a poza nim wartość z zebranych pomiarów („sonda”).
-W menu są też: krycie, próg, przekroje, mapa pola, makieta z góry (pokój w miniaturze
+W menu są też: krycie, zakres widocznych wartości (od / do / wytnij), przekroje, mapa pola, makieta z góry (pokój w miniaturze
 na wysokości stołu), zapis i czyszczenie pomiarów. Pomiary zapisują się też automatycznie
 po wyjściu z gogli.
 

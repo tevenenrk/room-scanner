@@ -179,8 +179,21 @@ function syncViewerControls() {
   $('#field-mode').value = s.fieldMode;
   $('#field-opacity').value = s.fieldOpacity;
   $('#field-opacity-out').textContent = `${Math.round(s.fieldOpacity * 100)}%`;
-  $('#threshold').value = s.threshold;
-  $('#threshold-out').textContent = `${Math.round(s.threshold * 100)}%`;
+  $('#band-lo').value = s.band.lo;
+  $('#band-hi').value = s.band.hi;
+  $('#band-lo-out').textContent = viewer.bandValueText('lo');
+  $('#band-hi-out').textContent = viewer.bandValueText('hi');
+  $('#band-invert').checked = s.band.invert;
+  // przyciemnienie ukrytych części paska skali
+  const lo = s.band.lo * 100, hi = s.band.hi * 100;
+  const [a, b] = [$('#mask-a'), $('#mask-b')];
+  if (s.band.invert) {
+    Object.assign(a.style, { left: `${lo}%`, width: `${hi - lo}%` });
+    Object.assign(b.style, { left: '0', width: '0' });
+  } else {
+    Object.assign(a.style, { left: '0', width: `${lo}%` });
+    Object.assign(b.style, { left: `${hi}%`, width: `${100 - hi}%` });
+  }
   $('#point-size').value = s.pointSize;
   $('#point-size-out').textContent = `${(s.pointSize * 100).toFixed(1)} cm`;
   $('#voxel-size').value = s.voxelSize;
@@ -306,7 +319,16 @@ on('#room-opacity', 'input', () => viewer.set({ roomOpacity: num('#room-opacity'
 on('#field-select', 'change', () => viewer.set({ fieldId: $('#field-select').value }));
 on('#field-mode', 'change', () => viewer.set({ fieldMode: $('#field-mode').value }));
 on('#field-opacity', 'input', () => viewer.set({ fieldOpacity: num('#field-opacity') }));
-on('#threshold', 'input', () => viewer.set({ threshold: num('#threshold') }));
+on('#band-lo', 'input', () => {
+  const lo = Math.min(num('#band-lo'), viewer.state.band.hi - 0.01);
+  viewer.set({ band: { lo } });
+});
+on('#band-hi', 'input', () => {
+  const hi = Math.max(num('#band-hi'), viewer.state.band.lo + 0.01);
+  viewer.set({ band: { hi } });
+});
+on('#band-invert', 'change', () => viewer.set({ band: { invert: $('#band-invert').checked } }));
+on('#band-reset', 'click', () => viewer.set({ band: { lo: 0, hi: 1, invert: false } }));
 on('#point-size', 'input', () => viewer.set({ pointSize: num('#point-size') }));
 on('#voxel-size', 'input', () => viewer.set({ voxelSize: num('#voxel-size') }));
 on('#cut-top', 'change', () => viewer.set({ cutTop: { on: $('#cut-top').checked } }));
