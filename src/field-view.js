@@ -81,7 +81,22 @@ export class FieldView extends THREE.Group {
       }),
     };
     this.current = null; // obiekt aktualnego trybu
-    this.mapMesh = null;
+
+    // Płaszczyzna mapy: prostokąt z teksturą + ramka (widoczna też tam, gdzie brak danych).
+    const quad = new THREE.BufferGeometry();
+    quad.setAttribute('position', new THREE.BufferAttribute(new Float32Array(12), 3));
+    quad.setAttribute('uv', new THREE.BufferAttribute(new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), 2));
+    quad.setIndex([0, 1, 2, 0, 2, 3]);
+    this.mapMesh = new THREE.Mesh(quad, this.materials.map);
+    this.mapMesh.renderOrder = 2;
+    this.mapMesh.frustumCulled = false;
+    this.mapFrame = new THREE.LineLoop(
+      new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(12), 3)),
+      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 }),
+    );
+    this.mapFrame.frustumCulled = false;
+    this.mapMesh.visible = this.mapFrame.visible = false;
+    this.add(this.mapMesh, this.mapFrame);
   }
 
   setData(set, bounds) {
@@ -96,9 +111,11 @@ export class FieldView extends THREE.Group {
     const changed = (k) => prev[k] !== next[k];
     const bandChanged = ['lo', 'hi', 'invert'].some((k) => prev.band[k] !== next.band[k]);
     if (changed('fieldId') || changed('mode') || bandChanged || changed('voxelSize')) this.dirty = true;
-    if (changed('fieldId') || changed('voxelSize') || bandChanged || prev.map.axis !== next.map.axis || prev.map.pos !== next.map.pos) this.mapDirty = true;
+    const mapMoved = ['axis', 'pos', 'free'].some((k) => prev.map[k] !== next.map[k]);
+    if (changed('fieldId') || changed('voxelSize') || bandChanged || mapMoved || prev.map.live !== next.map.live) this.mapDirty = true;
     this.cfg = next;
     this.applyMaterial();
+    if (mapMoved) this.updateMapGeometry(); // płaszczyzna podąża za ręką od razu, tekstura – z opóźnieniem
   }
 
   /** Zmiany danych (nowe próbki). */
@@ -155,9 +172,19 @@ export class FieldView extends THREE.Group {
   }
 
   /**
-   * Czy wartość (znormalizowana do skali kolorów) jest widoczna.
+   * Pozycja na tęczy dla wartości t (0..1 względem min..max pomiarów).
+   * Widoczny zakres [lo, hi] zawsze dostaje całą tęczę – im węższy zakres,
+   * tym dokładniej widać różnice. Przy "wytnij zakres" skala zostaje pełna.
+   */
+  colorT(t) {
+    const { lo, hi, invert } = this.cfg.band;
+    if (invert || hi - lo <= 1e-6) return t;
+    return (t - lo) / (hi - lo);
+  }
+
+  /**
+   * Czy wartość (znormalizowana do min..max) jest widoczna.
    * Zakres [lo, hi] zostaje; z invert = true ten zakres jest wycinany.
-   * Wartości poza skalą (poniżej 2. / powyżej 98. percentyla) należą do skrajnych końców.
    */
   inBand(t) {
     if (!Number.isFinite(t)) return false;
@@ -173,7 +200,8 @@ export class FieldView extends THREE.Group {
       this.lastBuild = now;
       this.rebuild();
     }
-    if (this.mapDirty && (force || now - this.lastMapBuild > 500)) {
+    const mapThrottle = this.cfg.map.live ? 120 : 500;
+    if (this.mapDirty && (force || now - this.lastMapBuild > mapThrottle)) {
       this.mapDirty = false;
       this.lastMapBuild = now;
       this.rebuildMap();
@@ -204,7 +232,7 @@ export class FieldView extends THREE.Group {
         const t = this.norm(set.scalar(cfg.fieldId, i));
         if (!this.inBand(t)) continue;
         pos.set(set.positions.subarray(i * 3, i * 3 + 3), n * 3);
-        turboColor(t, color).toArray(col, n * 3);
+        turboColor(this.colorT(t), color).toArray(col, n * 3);
         n++;
       }
       const g = new THREE.BufferGeometry();
@@ -225,7 +253,7 @@ export class FieldView extends THREE.Group {
         const r = set.radii[i] || 0.05;
         m.makeScale(r, r, r).setPosition(set.positions[i * 3], set.positions[i * 3 + 1], set.positions[i * 3 + 2]);
         mesh.setMatrixAt(k, m);
-        mesh.setColorAt(k, turboColor(this.norm(set.scalar(cfg.fieldId, i)), color));
+        mesh.setColorAt(k, turboColor(this.colorT(this.norm(set.scalar(cfg.fieldId, i))), color));
       });
       mesh.count = chosen.length;
       this.current = mesh;
@@ -254,7 +282,7 @@ export class FieldView extends THREE.Group {
           let len;
           if (def.components === 3) {
             dir.fromArray(c.vec);
-            len = 0.35 + 0.65 * Math.min(1, Math.max(0, t));
+            len = 0.35 + 0.65 * Math.min(1, Math.max(0, this.colorT(t)));
           } else {
             dir.fromArray(c.grad);
             len = 0.3 + 0.7 * Math.min(1, dir.length() / gradScale);
@@ -268,7 +296,7 @@ export class FieldView extends THREE.Group {
           m.compose(p, q.identity(), s.set(w, w, w));
         }
         mesh.setMatrixAt(k, m);
-        mesh.setColorAt(k, turboColor(t, color));
+        mesh.setColorAt(k, turboColor(this.colorT(t), color));
         k++;
       }
       mesh.count = k;
@@ -283,71 +311,114 @@ export class FieldView extends THREE.Group {
     this.add(this.current);
   }
 
-  /** Mapa pola na płaszczyźnie (przekrój pola). */
-  rebuildMap() {
-    if (this.mapMesh) {
-      this.remove(this.mapMesh);
-      this.mapMesh.geometry.dispose();
-      this.materials.map.map?.dispose();
-      this.materials.map.map = null;
-      this.mapMesh = null;
-    }
-    const { axis, pos } = this.cfg.map;
-    if (axis === 'off' || !this.set?.count || !this.fieldDef()) return;
-    this.getRange();
+  /**
+   * Funkcja (u, v) -> punkt płaszczyzny mapy w układzie skanu.
+   * axis: 'y' | 'x' | 'z' (płaszczyzny przez cały pokój) albo 'free'
+   * (dowolna płaszczyzna, np. trzymana w ręce: free = { c, u, v, w, h }).
+   */
+  mapPlane() {
+    const { axis, pos, free } = this.cfg.map;
     const b = this.bounds;
     const size = b.getSize(new THREE.Vector3());
-    // (u, v) -> punkt na płaszczyźnie
+    if (axis === 'free') {
+      if (!free) return null;
+      const [cx, cy, cz] = free.c, [ux, uy, uz] = free.u, [vx, vy, vz] = free.v;
+      return {
+        extentU: free.w, extentV: free.h,
+        toWorld: (u, v, out) => out.set(
+          cx + (u - 0.5) * free.w * ux + (v - 0.5) * free.h * vx,
+          cy + (u - 0.5) * free.w * uy + (v - 0.5) * free.h * vy,
+          cz + (u - 0.5) * free.w * uz + (v - 0.5) * free.h * vz,
+        ),
+      };
+    }
     const toWorld = {
       y: (u, v, out) => out.set(b.min.x + u * size.x, pos, b.min.z + v * size.z),
       x: (u, v, out) => out.set(pos, b.min.y + v * size.y, b.min.z + u * size.z),
       z: (u, v, out) => out.set(b.min.x + u * size.x, b.min.y + v * size.y, pos),
     }[axis];
-    const extentU = axis === 'z' ? size.x : axis === 'x' ? size.z : size.x;
-    const extentV = axis === 'y' ? size.z : size.y;
-    const vox = this.getVox();
-    const cell = vox.size / 3;
-    const W = THREE.MathUtils.clamp(Math.round(extentU / cell), 8, 160);
-    const H = THREE.MathUtils.clamp(Math.round(extentV / cell), 8, 160);
-    const data = new Uint8Array(W * H * 4);
-    const p = new THREE.Vector3();
-    const radius = vox.size * 1.6;
-    for (let j = 0; j < H; j++) {
-      for (let i = 0; i < W; i++) {
-        toWorld((i + 0.5) / W, (j + 0.5) / H, p);
-        const v = sampleVoxels(vox, p.x, p.y, p.z, radius);
-        const o = (j * W + i) * 4;
-        if (!Number.isFinite(v)) continue;
-        const t = this.norm(v);
-        const [r, g, bb] = turboRGB(t);
-        data[o] = r * 255; data[o + 1] = g * 255; data[o + 2] = bb * 255;
-        data[o + 3] = this.inBand(t) ? 255 : 0;
-      }
-    }
-    const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.magFilter = THREE.LinearFilter;
-    tex.minFilter = THREE.LinearFilter;
-    tex.needsUpdate = true;
-    this.materials.map.map = tex;
-    this.materials.map.needsUpdate = true;
+    if (!toWorld) return null;
+    return {
+      toWorld,
+      extentU: axis === 'x' ? size.z : size.x,
+      extentV: axis === 'y' ? size.z : size.y,
+    };
+  }
 
-    const corners = [[0, 0], [1, 0], [1, 1], [0, 1]];
-    const positions = new Float32Array(12);
-    corners.forEach(([u, v], k) => toWorld(u, v, p).toArray(positions, k * 3));
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), 2));
-    g.setIndex([0, 1, 2, 0, 2, 3]);
-    this.mapMesh = new THREE.Mesh(g, this.materials.map);
-    this.mapMesh.renderOrder = 2;
-    this.add(this.mapMesh);
+  /** Ustawia narożniki prostokąta i ramki (bez przeliczania tekstury). */
+  updateMapGeometry() {
+    const plane = this.mapPlane();
+    const show = !!plane && this.cfg.map.axis !== 'off';
+    this.mapFrame.visible = show;
+    this.mapMesh.visible = show && !!this.materials.map.map;
+    if (!show) return;
+    const p = new THREE.Vector3();
+    const qa = this.mapMesh.geometry.attributes.position;
+    const fa = this.mapFrame.geometry.attributes.position;
+    [[0, 0], [1, 0], [1, 1], [0, 1]].forEach(([u, v], k) => {
+      plane.toWorld(u, v, p);
+      qa.setXYZ(k, p.x, p.y, p.z);
+      fa.setXYZ(k, p.x, p.y, p.z);
+    });
+    qa.needsUpdate = fa.needsUpdate = true;
+    this.mapMesh.geometry.computeBoundingSphere();
+  }
+
+  /** Mapa pola na płaszczyźnie (przekrój pola): przelicza teksturę. */
+  rebuildMap() {
+    this.materials.map.map?.dispose();
+    this.materials.map.map = null;
+    const plane = this.mapPlane();
+    if (this.cfg.map.axis !== 'off' && plane && this.set?.count && this.fieldDef()) {
+      this.getRange();
+      const vox = this.getVox(this.cfg.map.live ? 300 : 0);
+      let W, H;
+      if (this.cfg.map.axis === 'free') {
+        // trzymana w ręce: mniejsza rozdzielczość, żeby nadążać za ruchem
+        const n = this.cfg.map.live ? 40 : 96;
+        const aspect = plane.extentU / Math.max(plane.extentV, 1e-3);
+        W = Math.round(aspect >= 1 ? n : n * aspect);
+        H = Math.round(aspect >= 1 ? n / aspect : n);
+      } else {
+        const cell = vox.size / 3;
+        W = Math.round(plane.extentU / cell);
+        H = Math.round(plane.extentV / cell);
+      }
+      W = THREE.MathUtils.clamp(W, 8, 160);
+      H = THREE.MathUtils.clamp(H, 8, 160);
+      const data = new Uint8Array(W * H * 4);
+      const p = new THREE.Vector3();
+      const radius = vox.size * 1.6;
+      for (let j = 0; j < H; j++) {
+        for (let i = 0; i < W; i++) {
+          plane.toWorld((i + 0.5) / W, (j + 0.5) / H, p);
+          const v = sampleVoxels(vox, p.x, p.y, p.z, radius);
+          if (!Number.isFinite(v)) continue;
+          const t = this.norm(v);
+          if (!this.inBand(t)) continue;
+          const o = (j * W + i) * 4;
+          const [r, g, bb] = turboRGB(this.colorT(t));
+          data[o] = r * 255; data[o + 1] = g * 255; data[o + 2] = bb * 255;
+          data[o + 3] = 255;
+        }
+      }
+      const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.magFilter = THREE.LinearFilter;
+      tex.minFilter = THREE.LinearFilter;
+      tex.needsUpdate = true;
+      this.materials.map.map = tex;
+    }
+    this.materials.map.needsUpdate = true;
+    this.updateMapGeometry();
   }
 
   dispose() {
     this.disposeCurrent();
-    this.cfg.map = { ...this.cfg.map, axis: 'off' };
-    this.rebuildMap();
+    this.materials.map.map?.dispose();
+    this.mapMesh.geometry.dispose();
+    this.mapFrame.geometry.dispose();
+    this.mapFrame.material.dispose();
     Object.values(this.geoms).forEach((g) => g.dispose());
     this.materials.dots.map.dispose();
     Object.values(this.materials).forEach((m) => m.dispose());

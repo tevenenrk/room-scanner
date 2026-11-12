@@ -14,8 +14,8 @@ export const ROOM_MODES = ['solid', 'wire', 'points', 'hidden'];
 export const ROOM_MODE_NAMES = { solid: 'Bryła', wire: 'Siatka', points: 'Punkty', hidden: 'Ukryty' };
 export const SIDE_CUTS = ['off', 'x+', 'x-', 'z+', 'z-'];
 export const SIDE_CUT_NAMES = { off: 'wył.', 'x+': 'X (lewa)', 'x-': 'X (prawa)', 'z+': 'Z (tył)', 'z-': 'Z (przód)' };
-export const MAP_AXES = ['off', 'y', 'x', 'z'];
-export const MAP_AXIS_NAMES = { off: 'wył.', y: 'poziomo', x: 'pionowo X', z: 'pionowo Z' };
+export const MAP_AXES = ['off', 'y', 'x', 'z', 'free'];
+export const MAP_AXIS_NAMES = { off: 'wył.', y: 'poziomo', x: 'pionowo X', z: 'pionowo Z', free: 'ręczna (z gogli)', hand: 'w ręce' };
 export { FIELD_MODES, FIELD_MODE_NAMES };
 
 const clamp = THREE.MathUtils.clamp;
@@ -34,7 +34,7 @@ function defaultState() {
     voxelSize: 0.25,
     cutTop: { on: true, h: 2.2 },
     cutSide: { mode: 'off', pos: 0 },
-    map: { axis: 'off', pos: 1 },
+    map: { axis: 'off', pos: 1, free: null, size: 1.0, live: false },
     measuring: false,
     brush: 0.08,
     dollhouse: false,
@@ -123,7 +123,7 @@ export class ScanViewer {
       fieldId: this.meas.field(prevField) ? prevField : this.firstFieldWithData(),
       cutTop: { on: true, h: +(b.max.y > 1.6 ? b.max.y - 0.3 : b.max.y + 0.1).toFixed(2) },
       cutSide: { mode: 'off', pos: +c.x.toFixed(2) },
-      map: { axis: 'off', pos: 1 },
+      map: { axis: 'off', pos: 1, free: null, size: keep.map.size, live: false },
     };
     this.applyState();
     this.viewPerspective();
@@ -228,10 +228,8 @@ export class ScanViewer {
   }
 
   bandValueText(which) {
-    const def = this.fieldDef();
-    const edge = which === 'lo' ? this.state.band.lo <= 0 : this.state.band.hi >= 1;
-    if (edge) return which === 'lo' ? 'min' : 'max';
-    return formatValue(def, this.bandValue(which));
+    if (!this.fieldView.getRange().count) return '—';
+    return formatValue(this.fieldDef(), this.bandValue(which));
   }
 
   legendInfo() {
@@ -244,6 +242,8 @@ export class ScanViewer {
       unit: def.unit,
       min: r.min, max: r.max,
       band: this.state.band,
+      loText: this.bandValueText('lo'),
+      hiText: this.bandValueText('hi'),
       minText: r.count ? formatValue(def, r.min) : 'brak pomiarów',
       maxText: r.count ? formatValue(def, r.max) : '',
       count: r.count,
@@ -364,8 +364,35 @@ export class ScanViewer {
     const s = () => this.state;
     const fieldIds = () => this.meas.fields.map((f) => f.id);
     const b = () => this.bounds;
+    let flashText = '', flashUntil = 0;
+    const flash = (t) => { flashText = t; flashUntil = performance.now() + 2000; };
+
+    // Suwaki zakresu na pasku skali (przeciągane promieniem).
+    const setBand = (which, u) => {
+      const band = this.state.band;
+      if (which === 'lo') this.set({ band: { lo: clamp(+u.toFixed(3), 0, band.hi - 0.01) } });
+      else this.set({ band: { hi: clamp(+u.toFixed(3), band.lo + 0.01, 1) } });
+    };
+
+    // Mapa pola: płaszczyzny XYZ, "w ręce" (trzymana lewym pilotem) albo postawiona ręczna.
+    let holdingPlane = false;
+    const mapChoice = () => (holdingPlane ? 'hand' : this.state.map.axis);
+    const chooseMap = (d) => {
+      const options = ['off', 'y', 'x', 'z', 'hand'];
+      if (this.state.map.free) options.push('free');
+      const next = cycle(options, mapChoice(), d);
+      holdingPlane = next === 'hand';
+      if (holdingPlane) this.set({ map: { axis: 'free', live: true } });
+      else this.set({ map: { axis: next, live: false } });
+    };
+    const putDownPlane = () => {
+      holdingPlane = false;
+      this.set({ map: { live: false } });
+      flash('Mapa postawiona (lewy spust = weź znowu)');
+    };
+
     const menu = new XRMenu([
-      { type: 'legend', get: () => this.legendInfo() },
+      { type: 'legend', get: () => this.legendInfo(), onBand: (which, u) => setBand(which, u) },
       { type: 'stepper', label: 'Pole', value: () => this.fieldDef()?.name || '—',
         dec: () => this.set({ fieldId: cycle(fieldIds(), s().fieldId, -1) }),
         inc: () => this.set({ fieldId: cycle(fieldIds(), s().fieldId, 1) }) },
@@ -375,12 +402,6 @@ export class ScanViewer {
       { type: 'stepper', label: 'Krycie pól', value: () => pct(s().fieldOpacity),
         dec: () => this.set({ fieldOpacity: clamp(+(s().fieldOpacity - 0.1).toFixed(2), 0.1, 1) }),
         inc: () => this.set({ fieldOpacity: clamp(+(s().fieldOpacity + 0.1).toFixed(2), 0.1, 1) }) },
-      { type: 'stepper', label: 'Pokaż od', value: () => this.bandValueText('lo'),
-        dec: () => this.set({ band: { lo: clamp(+(s().band.lo - 0.05).toFixed(2), 0, s().band.hi - 0.05) } }),
-        inc: () => this.set({ band: { lo: clamp(+(s().band.lo + 0.05).toFixed(2), 0, s().band.hi - 0.05) } }) },
-      { type: 'stepper', label: 'Pokaż do', value: () => this.bandValueText('hi'),
-        dec: () => this.set({ band: { hi: clamp(+(s().band.hi - 0.05).toFixed(2), s().band.lo + 0.05, 1) } }),
-        inc: () => this.set({ band: { hi: clamp(+(s().band.hi + 0.05).toFixed(2), s().band.lo + 0.05, 1) } }) },
       { type: 'buttons', items: [
         { label: 'Wytnij zakres (odwróć)', active: () => s().band.invert, onClick: () => this.set({ band: { invert: !s().band.invert } }) },
         { label: 'Cała skala', onClick: () => this.set({ band: { lo: 0, hi: 1, invert: false } }) },
@@ -406,9 +427,11 @@ export class ScanViewer {
       { type: 'stepper', label: '  pozycja przekroju', value: () => `${s().cutSide.pos.toFixed(1)} m`,
         dec: () => this.set({ cutSide: { pos: +(s().cutSide.pos - 0.1).toFixed(2) } }),
         inc: () => this.set({ cutSide: { pos: +(s().cutSide.pos + 0.1).toFixed(2) } }) },
-      { type: 'stepper', label: 'Mapa pola (płaszczyzna)', value: () => MAP_AXIS_NAMES[s().map.axis],
-        dec: () => this.set({ map: { axis: cycle(MAP_AXES, s().map.axis, -1) } }),
-        inc: () => this.set({ map: { axis: cycle(MAP_AXES, s().map.axis, 1) } }) },
+      { type: 'stepper', label: 'Mapa pola (płaszczyzna)', value: () => MAP_AXIS_NAMES[mapChoice()],
+        dec: () => chooseMap(-1), inc: () => chooseMap(1) },
+      { type: 'stepper', label: '  rozmiar mapy w ręce', value: () => `${s().map.size.toFixed(1)} m`,
+        dec: () => this.set({ map: { size: clamp(+(s().map.size - 0.2).toFixed(1), 0.4, 4) } }),
+        inc: () => this.set({ map: { size: clamp(+(s().map.size + 0.2).toFixed(1), 0.4, 4) } }) },
       { type: 'stepper', label: '  pozycja mapy', value: () => `${s().map.pos.toFixed(1)} m`,
         dec: () => this.set({ map: { pos: +(s().map.pos - 0.1).toFixed(2) } }),
         inc: () => this.set({ map: { pos: +(s().map.pos + 0.1).toFixed(2) } }) },
@@ -439,8 +462,6 @@ export class ScanViewer {
       clearRow.label = 'Wyczyść pomiary';
       this.clearMeasurements();
     };
-    let flashText = '', flashUntil = 0;
-    const flash = (t) => { flashText = t; flashUntil = performance.now() + 2000; };
     ui.add(menu.mesh);
     let menuNeedsPlacement = true;
 
@@ -456,17 +477,41 @@ export class ScanViewer {
     brush.add(brushWire);
     ui.add(brush);
 
-    const rayGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]);
-    const rays = new Map(); // inputSource -> Line
+    // Promień: cienki walec (lepiej widoczny niż linia 1 px) + kursor w miejscu trafienia w menu.
+    const rayGeom = new THREE.CylinderGeometry(0.0018, 0.0018, 1, 6, 1, true);
+    rayGeom.rotateX(-Math.PI / 2);
+    rayGeom.translate(0, 0, -0.5);
+    const cursorRing = new THREE.RingGeometry(0.009, 0.015, 32);
+    const cursorDot = new THREE.CircleGeometry(0.0045, 16);
+    const rays = new Map(); // inputSource -> { line, cursor }
     const getRay = (src) => {
-      let line = rays.get(src);
-      if (!line) {
-        line = new THREE.Line(rayGeom, new THREE.LineBasicMaterial({ color: 0x9fdcff, transparent: true, opacity: 0.8 }));
+      let r = rays.get(src);
+      if (!r) {
+        const line = new THREE.Mesh(rayGeom, new THREE.MeshBasicMaterial({ color: 0x9fdcff, transparent: true, opacity: 0.9 }));
         line.matrixAutoUpdate = false;
-        ui.add(line);
-        rays.set(src, line);
+        const top = { depthTest: false, depthWrite: false, transparent: true };
+        const cursor = new THREE.Group();
+        const ring = new THREE.Mesh(cursorRing, new THREE.MeshBasicMaterial({ color: 0xffe14d, ...top }));
+        const dot = new THREE.Mesh(cursorDot, new THREE.MeshBasicMaterial({ color: 0xffffff, ...top }));
+        ring.renderOrder = dot.renderOrder = 1002;
+        cursor.add(ring, dot);
+        cursor.visible = false;
+        ui.add(line, cursor);
+        r = { line, cursor, ring };
+        rays.set(src, r);
       }
-      return line;
+      return r;
+    };
+    // Punkt promienia na (nieskończonej) płaszczyźnie menu -> uv; do przeciągania poza krawędź.
+    const menuPlane = new THREE.Plane();
+    const menuHitPoint = new THREE.Vector3();
+    const menuUV = (ray) => {
+      menu.mesh.updateMatrixWorld();
+      menuPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 0, 1).applyQuaternion(menu.mesh.quaternion), menu.mesh.position);
+      if (!ray.intersectPlane(menuPlane, menuHitPoint)) return null;
+      const local = menu.mesh.worldToLocal(menuHitPoint.clone());
+      const { width, height } = menu.mesh.geometry.parameters;
+      return new THREE.Vector2(local.x / width + 0.5, local.y / height + 0.5);
     };
 
     // --- makieta (pokój w miniaturze przed użytkownikiem) ---
@@ -501,14 +546,86 @@ export class ScanViewer {
     // --- zdarzenia spustu ---
     const painting = new Map(); // inputSource -> ostatni punkt próbki (układ skanu)
     const hits = new Map(); // inputSource -> trafienie w menu
+    const dragging = new Set(); // piloty przeciągające suwak w menu
     const onSelectStart = (e) => {
-      const hit = menu.mesh.visible ? hits.get(e.inputSource) : null;
-      if (hit) { menu.click(hit); return; }
-      if (this.state.measuring && !this.state.dollhouse) painting.set(e.inputSource, null);
+      const src = e.inputSource;
+      const hit = menu.mesh.visible ? hits.get(src) : null;
+      if (hit) {
+        menu.press(hit);
+        if (menu.drag) dragging.add(src);
+        return;
+      }
+      if (holdingPlane && src.handedness !== 'right') { putDownPlane(); return; }
+      if (!holdingPlane && this.state.map.axis === 'free' && src.handedness === 'left' && !this.state.measuring) {
+        holdingPlane = true;
+        this.set({ map: { live: true } });
+        return;
+      }
+      if (this.state.measuring && !this.state.dollhouse) painting.set(src, null);
     };
-    const onSelectEnd = (e) => painting.delete(e.inputSource);
+    const onSelectEnd = (e) => {
+      painting.delete(e.inputSource);
+      if (dragging.delete(e.inputSource)) menu.release();
+    };
     session.addEventListener('selectstart', onSelectStart);
     session.addEventListener('selectend', onSelectEnd);
+
+    // --- chwytanie makiety (grip): jedna ręka = przesuwanie i obracanie, dwie = też skala ---
+    const grabs = new Set();
+    let grabBase = null;
+    const onSqueezeStart = (e) => {
+      if (!this.state.dollhouse) return;
+      grabs.add(e.inputSource);
+      grabBase = null; // nowa baza w następnej klatce
+    };
+    const onSqueezeEnd = (e) => {
+      if (grabs.delete(e.inputSource)) grabBase = null;
+    };
+    session.addEventListener('squeezestart', onSqueezeStart);
+    session.addEventListener('squeezeend', onSqueezeEnd);
+    const gripMatrix = (frame, ref, src) => {
+      const space = src.gripSpace || src.targetRaySpace;
+      const p = space && frame.getPose(space, ref);
+      return p ? new THREE.Matrix4().fromArray(p.transform.matrix) : null;
+    };
+    const updateGrab = (frame, ref) => {
+      if (!this.state.dollhouse || !xr.dollMatrix || !grabs.size) return;
+      const srcs = [...grabs].slice(0, 2);
+      const mats = srcs.map((src) => gripMatrix(frame, ref, src));
+      if (mats.some((m) => !m)) return;
+      if (!grabBase) { grabBase = { D0: xr.dollMatrix.clone(), mats }; return; }
+      let D;
+      if (mats.length === 1) {
+        // makieta podąża za dłonią (przesunięcie + obrót)
+        D = mats[0].clone().multiply(grabBase.mats[0].clone().invert()).multiply(grabBase.D0);
+      } else {
+        const p = mats.map((m) => new THREE.Vector3().setFromMatrixPosition(m));
+        const q = grabBase.mats.map((m) => new THREE.Vector3().setFromMatrixPosition(m));
+        const mid = p[0].clone().add(p[1]).multiplyScalar(0.5);
+        const mid0 = q[0].clone().add(q[1]).multiplyScalar(0.5);
+        const v = p[1].clone().sub(p[0]), v0 = q[1].clone().sub(q[0]);
+        const dAngle = Math.atan2(v.x, v.z) - Math.atan2(v0.x, v0.z);
+        const scale0 = new THREE.Vector3().setFromMatrixScale(grabBase.D0).x;
+        const k = clamp(v.length() / Math.max(v0.length(), 1e-3), 0.02 / scale0, 1.5 / scale0);
+        D = new THREE.Matrix4().makeTranslation(mid.x, mid.y, mid.z)
+          .multiply(new THREE.Matrix4().makeRotationY(dAngle))
+          .multiply(new THREE.Matrix4().makeScale(k, k, k))
+          .multiply(new THREE.Matrix4().makeTranslation(-mid0.x, -mid0.y, -mid0.z))
+          .multiply(grabBase.D0);
+      }
+      xr.dollMatrix = D;
+      this.updateContentMatrix();
+    };
+    // obrót makiety wokół jej środka (prawa gałka w bok)
+    const spinDollhouse = (angle) => {
+      const c = this.roomBounds.getCenter(new THREE.Vector3()).applyMatrix4(xr.dollMatrix);
+      xr.dollMatrix = new THREE.Matrix4().makeTranslation(c.x, c.y, c.z)
+        .multiply(new THREE.Matrix4().makeRotationY(angle))
+        .multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z))
+        .multiply(xr.dollMatrix);
+      grabBase = null;
+      this.updateContentMatrix();
+    };
 
     const pressed = new Map();
     const edge = (k, down) => { const was = pressed.get(k) || false; pressed.set(k, down); return down && !was; };
@@ -584,7 +701,9 @@ export class ScanViewer {
           if (edge('l4', btn(4))) this.set({ fieldId: cycle(fieldIds(), this.state.fieldId, 1) }); // X: pole
           if (edge('l3', btn(3)) && !isAR) { worldFromBase.identity(); moved = true; } // gałka: start
         } else if (hand === 'right') {
-          if (!isAR && pose && Math.abs(ax) > Math.abs(ay)) {
+          if (this.state.dollhouse && xr.dollMatrix && Math.abs(ax) > Math.abs(ay)) {
+            if (Math.abs(ax) > 0.15) spinDollhouse(-ax * dt * 1.8);
+          } else if (!isAR && pose && Math.abs(ax) > Math.abs(ay)) {
             if (turnArmed && Math.abs(ax) > 0.7) {
               const angle = -Math.sign(ax) * THREE.MathUtils.degToRad(30);
               const turn = new THREE.Matrix4().makeTranslation(xr.head.x, 0, xr.head.z)
@@ -606,6 +725,7 @@ export class ScanViewer {
         }
       }
       if (moved) applyOffset();
+      updateGrab(frame, ref);
 
       // Menu: ustawienie przed użytkownikiem.
       if (menuNeedsPlacement && xr.hasHead) {
@@ -623,7 +743,8 @@ export class ScanViewer {
       brush.visible = false;
       for (const src of session.inputSources) {
         const rp = src.targetRaySpace && frame.getPose(src.targetRaySpace, ref);
-        const line = getRay(src);
+        const { line, cursor, ring } = getRay(src);
+        cursor.visible = false;
         if (!rp) { line.visible = false; continue; }
         poseM.fromArray(rp.transform.matrix);
         rayOrigin.setFromMatrixPosition(poseM);
@@ -632,14 +753,44 @@ export class ScanViewer {
         let hit = null;
         if (menu.mesh.visible) {
           raycaster.set(rayOrigin, rayDir);
+          if (dragging.has(src)) menu.dragTo(menuUV(raycaster.ray));
           const ix = raycaster.intersectObject(menu.mesh, false)[0];
-          if (ix) { hit = menu.hitTest(ix.uv); len = ix.distance; if (hit) hoverHit = hit; }
-          else len = 1.5;
+          if (ix) {
+            hit = menu.hitTest(ix.uv);
+            len = ix.distance;
+            if (hit) hoverHit = hit;
+            // kursor: żółty pierścień z białą kropką, tuż przed menu
+            cursor.visible = true;
+            cursor.position.copy(ix.point).addScaledVector(rayDir, -0.004);
+            cursor.quaternion.copy(menu.mesh.quaternion);
+            const big = hit || dragging.has(src);
+            cursor.scale.setScalar(big ? 1.35 : 1);
+            ring.material.color.set(big ? 0xffe14d : 0x9fdcff);
+          } else len = 1.5;
         }
         hits.set(src, hit);
         line.matrix.copy(poseM).multiply(tmpM.makeScale(1, 1, len));
         line.matrixWorldNeedsUpdate = true;
+        line.material.color.set(hit || dragging.has(src) ? 0xffe14d : 0x9fdcff);
         line.visible = src.targetRayMode !== 'screen';
+
+        // Płaszczyzna mapy trzymana w lewej ręce: rozpięta na osi X pilota i kierunku wskazywania.
+        if (holdingPlane && (src.handedness === 'left' || session.inputSources.length === 1)) {
+          const size = this.state.map.size;
+          const U = new THREE.Vector3(1, 0, 0).applyQuaternion(tmpQ);
+          const center = rayOrigin.clone().addScaledVector(rayDir, 0.08 + size / 2).applyMatrix4(contentInv);
+          const cs = contentScale;
+          this.state.map = {
+            ...this.state.map, axis: 'free', live: true,
+            free: {
+              c: center.toArray(),
+              u: U.transformDirection(contentInv).toArray(),
+              v: rayDir.clone().transformDirection(contentInv).toArray(),
+              w: size / cs, h: size / cs,
+            },
+          };
+          this.fieldView.configure({ map: this.state.map });
+        }
 
         // Kierunek pilota = oś trzyosiowego czujnika (dla pól wektorowych udawanego Arduino).
         if (src === primary) this.manualSensor.setDirection(dirScan.copy(rayDir).transformDirection(contentInv));
@@ -666,8 +817,13 @@ export class ScanViewer {
         }
       }
       // Usuń promienie po rozłączonych pilotach.
-      for (const [src, line] of rays) {
-        if (![...session.inputSources].includes(src)) { ui.remove(line); line.material.dispose(); rays.delete(src); }
+      for (const [src, r] of rays) {
+        if (![...session.inputSources].includes(src)) {
+          ui.remove(r.line, r.cursor);
+          r.line.material.dispose();
+          r.cursor.children.forEach((c) => c.material.dispose());
+          rays.delete(src);
+        }
       }
       menu.setHover(hoverHit);
       if (now - lastMenuRedraw > 300 && menu.mesh.visible) { menu.redraw(); lastMenuRedraw = now; }
@@ -701,12 +857,15 @@ export class ScanViewer {
       }
       const manual = this.state.sensorKind === 'arduino-manual';
       const status = now < flashUntil ? flashText
+        : holdingPlane ? 'Mapa w ręce · lewy spust = postaw'
+        : this.state.dollhouse ? 'Makieta: grip = chwyć (2 ręce = skala)'
         : this.state.measuring && manual ? `● Spust = rysuj · gałka ↕ = wartość · grip+gałka = kulka`
         : this.state.measuring ? `● Pomiar: spust = rysuj, kulka ${Math.round(this.state.brush * 100)} cm`
         : manual ? `Arduino: ${this.manualSensor.status()} · gałka ↕ = wartość`
           : isAR && refMatrix ? (xr.aligned ? 'Wyrównano do pokoju' : 'Szukam pokoju do wyrównania...')
             : `Pomiarów: ${this.meas.count}  ·  Y = menu`;
-      legend.set({ name: L.name, minText: L.minText, maxText: L.maxText, probeText, status, t, band: L.band });
+      const inv = this.state.band.invert;
+      legend.set({ name: L.name, minText: inv ? L.minText : L.loText, maxText: inv ? L.maxText : L.hiText, probeText, status, t, band: L.band });
       // Legenda nad lewym pilotem albo w dolnej części widoku.
       const left = [...session.inputSources].find((x) => x.handedness === 'left');
       const lp = left && (left.gripSpace || left.targetRaySpace) && frame.getPose(left.gripSpace || left.targetRaySpace, ref);
@@ -726,6 +885,9 @@ export class ScanViewer {
     await ended;
     session.removeEventListener('selectstart', onSelectStart);
     session.removeEventListener('selectend', onSelectEnd);
+    session.removeEventListener('squeezestart', onSqueezeStart);
+    session.removeEventListener('squeezeend', onSqueezeEnd);
+    if (holdingPlane) { holdingPlane = false; this.state.map = { ...this.state.map, live: false }; }
     this.scene.remove(ui);
     menu.dispose();
     legend.dispose();
@@ -733,10 +895,15 @@ export class ScanViewer {
     brush.material.dispose();
     brushWire.material.dispose();
     rayGeom.dispose();
-    for (const line of rays.values()) line.material.dispose();
+    cursorRing.dispose();
+    cursorDot.dispose();
+    for (const r of rays.values()) {
+      r.line.material.dispose();
+      r.cursor.children.forEach((c) => c.material.dispose());
+    }
     this.xr = null;
     this.state.dollhouse = false;
-    this.updateContentMatrix();
+    this.applyState();
     this.scene.background = prevBackground;
     this.grid.visible = true;
     if (this.hasUnsavedMeasurements()) {

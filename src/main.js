@@ -5,6 +5,7 @@ import {
 } from './viewer.js';
 import { SENSOR_KINDS, SENSOR_NAMES, MANUAL_SPEC } from './sensors.js';
 import { formatValue } from './fields.js';
+import { drawBandGradient } from './xr-menu.js';
 import { LAYERS, LAYER_NAMES, layerOf, makeDemoScan, scanStats } from './scan-model.js';
 import { listScans, saveScan, deleteScan, getScan, requestPersistence } from './storage.js';
 import {
@@ -218,16 +219,9 @@ function syncViewerControls() {
   $('#band-lo-out').textContent = viewer.bandValueText('lo');
   $('#band-hi-out').textContent = viewer.bandValueText('hi');
   $('#band-invert').checked = s.band.invert;
-  // przyciemnienie ukrytych części paska skali
-  const lo = s.band.lo * 100, hi = s.band.hi * 100;
-  const [a, b] = [$('#mask-a'), $('#mask-b')];
-  if (s.band.invert) {
-    Object.assign(a.style, { left: `${lo}%`, width: `${hi - lo}%` });
-    Object.assign(b.style, { left: '0', width: '0' });
-  } else {
-    Object.assign(a.style, { left: '0', width: `${lo}%` });
-    Object.assign(b.style, { left: `${hi}%`, width: `${100 - hi}%` });
-  }
+  // pasek skali: cały = min..max pomiarów, widoczny zakres ma całą tęczę
+  const bar = $('#legend-bar');
+  drawBandGradient(bar.getContext('2d'), 0, 0, bar.width, bar.height, s.band);
   $('#point-size').value = s.pointSize;
   $('#point-size-out').textContent = `${(s.pointSize * 100).toFixed(1)} cm`;
   $('#voxel-size').value = s.voxelSize;
@@ -247,7 +241,8 @@ function syncViewerControls() {
   $('#cut-side-pos').hidden = s.cutSide.mode === 'off';
   $('#cut-side-pos').value = s.cutSide.pos;
   $('#map-axis').value = s.map.axis;
-  $('#map-pos').hidden = s.map.axis === 'off';
+  $('#map-axis option[value=free]').disabled = !s.map.free;
+  $('#map-pos').hidden = s.map.axis === 'off' || s.map.axis === 'free';
   $('#map-pos').value = s.map.pos;
 
   const L = viewer.legendInfo();

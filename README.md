@@ -52,24 +52,38 @@ przyciskiem „+ Symulowane pomiary”.
 
 Do tego krycie (przezroczystość) pól i pokoju oraz skala kolorów z wartościami min/max.
 
-**Zakres widocznych wartości** („od” / „do”) pozwala wyciąć dowolny fragment spektrum:
-np. tylko najsilniejsze WiFi, tylko średnie wartości, albo (z opcją **„Wytnij ten zakres”**)
-wszystko oprócz środka skali. Ukryte części są przyciemnione na pasku skali.
+**Zakres widocznych wartości**: cały pasek skali to wartości od najmniejszego do największego
+pomiaru. Suwakami „od” / „do” (na komputerze) albo przeciągając uchwyty na pasku w menu gogli
+zawężasz widoczny zakres. Wartości spoza niego znikają, a cała tęcza zostaje rozciągnięta na to,
+co zostało, więc im węższy zakres, tym dokładniej widać różnice. Opcja **„Wytnij ten zakres”**
+działa odwrotnie: ukrywa wybrany fragment, a reszta zostaje w pełnej skali.
 
 ### Przekroje
 
 - **Utnij dach** na dowolnej wysokości (widok z góry: przycisk „Z góry” na komputerze,
   „Makieta z góry” w goglach),
 - **Przekrój pionowy** wzdłuż osi X lub Z, z wyborem, która strona zostaje,
-- **Mapa pola** na niezależnej płaszczyźnie (poziomo / pionowo X / pionowo Z).
+- **Mapa pola** na płaszczyźnie: poziomo / pionowo X / pionowo Z przez cały pokój albo
+  **„w ręce”**: płaszczyzna trzymana lewym pilotem (rozpięta wzdłuż pilota i w bok, obrót
+  nadgarstka zmienia jej nachylenie). Mapa przelicza się na bieżąco, gdy nią poruszasz.
+  **Lewy spust** stawia ją w miejscu, a kolejny lewy spust znowu ją podnosi. Postawiona
+  płaszczyzna jest też widoczna na komputerze jako „ręczna (z gogli)”. Rozmiar ustawisz w menu.
 
 Przekroje tną zarówno pokój, jak i pola.
+
+### Makieta z góry
+
+Pokój w miniaturze przed tobą, jak model na stole. Chwytasz go **gripem**:
+
+- jedna ręka: przesuwanie i obracanie razem z dłonią,
+- dwie ręce: dodatkowo skalowanie (rozsuwanie/zsuwanie dłoni) i obrót wokół pionu,
+- prawa gałka w bok: obracanie makiety wokół jej środka.
 
 ### Sterowanie w goglach
 
 | Przycisk | Działanie |
 |---|---|
-| **Y** (lewy) | menu: celujesz prawym pilotem, spust = klik |
+| **Y** (lewy) | menu: celujesz pilotem (żółty kursor i podświetlenie pokazują, w co celujesz), spust = klik, przytrzymanie = przeciąganie suwaka |
 | **X** (lewy) | następne pole |
 | **A** (prawy) | następny widok pola |
 | **B** (prawy) | tryb pomiaru wł./wył. |
@@ -77,7 +91,9 @@ Przekroje tną zarówno pokój, jak i pola.
 | prawa gałka góra/dół | z Arduino (gałka): wartość bieżącego pola; inaczej (w trybie pomiaru) wielkość kulki |
 | grip + prawa gałka góra/dół | wielkość kulki (przy Arduino) |
 | lewa gałka | chodzenie (VR) |
-| prawa gałka w bok | obrót o 30° (VR) |
+| prawa gałka w bok | obrót o 30° (VR); w makiecie obrót makiety |
+| grip (w makiecie) | chwycenie makiety, dwoma rękami także skala |
+| lewy spust (mapa „w ręce”) | postaw / podnieś płaszczyznę mapy |
 | wciśnięcie lewej gałki | powrót na start (VR) |
 
 Nad lewym pilotem jest tabliczka ze skalą kolorów i wartością pola w miejscu kulki:

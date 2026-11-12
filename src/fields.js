@@ -13,7 +13,8 @@ export const SIM_FIELDS = [
 // --- mapa kolorów (Turbo, przybliżenie wielomianowe) -----------------------
 
 export function turboRGB(t) {
-  t = Math.min(1, Math.max(0, t));
+  // Bez skrajnie ciemnych końców Turbo: klasyczna tęcza fiolet/niebieski -> zielony -> czerwony.
+  t = 0.07 + 0.88 * Math.min(1, Math.max(0, t));
   const r = 0.13572138 + t * (4.6153926 + t * (-42.66032258 + t * (132.13108234 + t * (-152.94239396 + t * 59.28637943))));
   const g = 0.09140261 + t * (2.19418839 + t * (4.84296658 + t * (-14.18503333 + t * (4.27729857 + t * 2.82956604))));
   const b = 0.1066733 + t * (12.64194608 + t * (-60.58204836 + t * (110.36276771 + t * (-89.90310912 + t * 27.34824973))));
@@ -139,19 +140,19 @@ export class MeasurementSet {
   }
 }
 
-/** Zakres wartości (percentyle 2–98 %, odporne na pojedyncze skoki). */
+/** Zakres wartości: najmniejszy i największy pomiar (cały pasek skali). */
 export function computeRange(set, fieldId) {
-  const vals = [];
+  let min = Infinity, max = -Infinity, count = 0;
   for (let i = 0; i < set.count; i++) {
     const v = set.scalar(fieldId, i);
-    if (Number.isFinite(v)) vals.push(v);
+    if (!Number.isFinite(v)) continue;
+    if (v < min) min = v;
+    if (v > max) max = v;
+    count++;
   }
-  if (!vals.length) return { min: 0, max: 1, count: 0 };
-  vals.sort((a, b) => a - b);
-  const q = (p) => vals[Math.min(vals.length - 1, Math.max(0, Math.round(p * (vals.length - 1))))];
-  let min = q(0.02), max = q(0.98);
+  if (!count) return { min: 0, max: 1, count: 0 };
   if (max - min < 1e-6) { min -= 0.5; max += 0.5; }
-  return { min, max, count: vals.length };
+  return { min, max, count };
 }
 
 // --- siatka 3D (woksele) ------------------------------------------------------

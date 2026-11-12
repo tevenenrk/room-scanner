@@ -1,5 +1,5 @@
-// Menu w goglach obsługiwane promieniem z pilota (spust = klik)
-// oraz mała legenda kolorów z odczytem "sondy".
+// Menu w goglach obsługiwane promieniem z pilota (spust = klik, przytrzymanie = przeciąganie)
+// oraz mała tabliczka z legendą kolorów i odczytem "sondy".
 
 import * as THREE from 'three';
 import { turboRGB } from './fields.js';
@@ -19,26 +19,50 @@ function makeCanvasMesh(widthM, pxW, pxH) {
   return { mesh, canvas, texture, ctx: canvas.getContext('2d') };
 }
 
-/** Pasek skali kolorów; części poza widocznym zakresem (band) są przyciemnione. */
-function drawGradient(ctx, x, y, w, h, band) {
+/**
+ * Pasek skali: cała szerokość = min..max pomiarów. Widoczny zakres [lo, hi]
+ * dostaje całą tęczę (rozciągniętą), reszta jest szara (niewidoczna).
+ * Przy band.invert wycięty zakres jest szary, a reszta ma pełną skalę.
+ */
+export function drawBandGradient(ctx, x, y, w, h, band = { lo: 0, hi: 1, invert: false }) {
+  const { lo, hi, invert } = band;
   for (let i = 0; i < w; i++) {
     const t = i / (w - 1);
-    const [r, g, b] = turboRGB(t);
-    let k = 1;
-    if (band) {
-      const inside = (t >= band.lo || band.lo <= 0) && (t <= band.hi || band.hi >= 1);
-      if (band.invert ? inside : !inside) k = 0.18;
+    const inside = t >= lo - 1e-6 && t <= hi + 1e-6;
+    const visible = invert ? !inside : inside;
+    if (!visible) {
+      ctx.fillStyle = (i >> 2) % 2 ? '#2b303a' : '#353b47';
+    } else {
+      const ct = invert || hi - lo <= 1e-6 ? t : (t - lo) / (hi - lo);
+      const [r, g, b] = turboRGB(ct);
+      ctx.fillStyle = `rgb(${r * 255 | 0},${g * 255 | 0},${b * 255 | 0})`;
     }
-    ctx.fillStyle = `rgb(${r * 255 * k | 0},${g * 255 * k | 0},${b * 255 * k | 0})`;
     ctx.fillRect(x + i, y, 1, h);
   }
+}
+
+function drawHandle(ctx, x, top, bottom, hot) {
+  ctx.fillStyle = hot ? '#ffe14d' : '#ffffff';
+  ctx.strokeStyle = '#04131f';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(x - 9, top - 6, 18, bottom - top + 12, 6);
+  ctx.fill();
+  ctx.stroke();
+  // trójkąty nad i pod paskiem
+  ctx.beginPath();
+  ctx.moveTo(x - 16, top - 24); ctx.lineTo(x + 16, top - 24); ctx.lineTo(x, top - 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
 }
 
 /**
  * rows: tablica wierszy:
  *  { type: 'stepper', label, value: () => string, dec: () => void, inc: () => void }
  *  { type: 'buttons', items: [{ label, onClick, active?: () => bool }] }
- *  { type: 'legend', get: () => ({ name, unit, min, max, decimals }) }
+ *  { type: 'legend', get: () => ({ name, minText, maxText, loText, hiText, band }),
+ *    onBand: (which: 'lo' | 'hi', u: 0..1) => void }   – pasek z suwakami zakresu
  */
 export class XRMenu {
   constructor(rows, { width = 0.52 } = {}) {
@@ -49,7 +73,7 @@ export class XRMenu {
     this.layout = [];
     let y = this.pad;
     for (const row of rows) {
-      const h = row.type === 'legend' ? 120 : this.rowH;
+      const h = row.type === 'legend' ? 200 : this.rowH;
       this.layout.push({ row, y, h });
       y += h + 6;
     }
@@ -60,7 +84,12 @@ export class XRMenu {
     this.texture = texture;
     this.ctx = ctx;
     this.hover = null;
+    this.drag = null;
     this.redraw();
+  }
+
+  trackRect(entry) {
+    return { x: this.pad + 30, y: entry.y + 110, w: this.W - 2 * this.pad - 60, h: 44 };
   }
 
   zones(entry) {
@@ -78,42 +107,79 @@ export class XRMenu {
       const w = (W - 2 * this.pad - gap * (n - 1)) / n;
       return row.items.map((item, i) => ({ id: i, x: this.pad + i * (w + gap), y, w, h }));
     }
+    if (row.type === 'legend' && row.onBand) {
+      const t = this.trackRect(entry);
+      // strefa chwytania szersza niż sam pasek
+      return [{ id: 'track', x: t.x - 30, y: t.y - 40, w: t.w + 60, h: t.h + 70 }];
+    }
     return [];
   }
 
-  /** uv z raycastera -> trafienie {entryIndex, zoneId} albo null */
+  /** Piksele płótna z uv raycastera. */
+  toPx(uv) { return { x: uv.x * this.W, y: (1 - uv.y) * this.H }; }
+
+  /** uv z raycastera -> trafienie { index, zone, u? } albo null */
   hitTest(uv) {
     if (!uv) return null;
-    const x = uv.x * this.W;
-    const y = (1 - uv.y) * this.H;
+    const { x, y } = this.toPx(uv);
     for (let i = 0; i < this.layout.length; i++) {
       for (const z of this.zones(this.layout[i])) {
-        if (x >= z.x && x <= z.x + z.w && y >= z.y && y <= z.y + z.h) return { index: i, zone: z.id };
+        if (x >= z.x && x <= z.x + z.w && y >= z.y && y <= z.y + z.h) {
+          const hit = { index: i, zone: z.id };
+          if (z.id === 'track') {
+            const t = this.trackRect(this.layout[i]);
+            hit.u = THREE.MathUtils.clamp((x - t.x) / t.w, 0, 1);
+          }
+          return hit;
+        }
       }
     }
     return null;
   }
 
   setHover(hit) {
-    const same = (a, b) => (a === b) || (a && b && a.index === b.index && a.zone === b.zone);
+    const same = (a, b) => (a === b) || (a && b && a.index === b.index && a.zone === b.zone
+      && (a.zone !== 'track' || Math.abs(a.u - b.u) < 0.01));
     if (same(hit, this.hover)) return;
     this.hover = hit;
     this.redraw();
   }
 
-  click(hit) {
+  /** Wciśnięcie spustu na menu: przycisk = klik, pasek = początek przeciągania uchwytu. */
+  press(hit) {
     if (!hit) return false;
     const { row } = this.layout[hit.index];
-    if (row.type === 'stepper') (hit.zone === 'dec' ? row.dec : row.inc)();
-    else if (row.type === 'buttons') row.items[hit.zone].onClick();
+    if (hit.zone === 'track') {
+      const { band } = row.get();
+      const dLo = Math.abs(hit.u - band.lo), dHi = Math.abs(hit.u - band.hi);
+      const handle = dLo < dHi || (dLo === dHi && hit.u < band.lo) ? 'lo' : 'hi';
+      this.drag = { index: hit.index, handle };
+      row.onBand(handle, hit.u);
+    } else if (row.type === 'stepper') {
+      (hit.zone === 'dec' ? row.dec : row.inc)();
+    } else if (row.type === 'buttons') {
+      row.items[hit.zone].onClick();
+    }
     this.redraw();
     return true;
   }
 
+  /** Przeciąganie uchwytu (uv punktu, w który celuje promień). */
+  dragTo(uv) {
+    if (!this.drag || !uv) return;
+    const entry = this.layout[this.drag.index];
+    const t = this.trackRect(entry);
+    const u = THREE.MathUtils.clamp((this.toPx(uv).x - t.x) / t.w, 0, 1);
+    entry.row.onBand(this.drag.handle, u);
+    this.redraw();
+  }
+
+  release() { this.drag = null; }
+
   redraw() {
     const { ctx, W, H } = this;
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = 'rgba(16, 20, 28, 0.92)';
+    ctx.fillStyle = 'rgba(16, 20, 28, 0.94)';
     ctx.beginPath();
     ctx.roundRect(2, 2, W - 4, H - 4, 28);
     ctx.fill();
@@ -125,28 +191,54 @@ export class XRMenu {
     this.layout.forEach((entry, index) => {
       const { row, y, h } = entry;
       const mid = y + h / 2;
+      const rowHot = this.hover && this.hover.index === index;
+      if (rowHot && row.type !== 'legend') {
+        ctx.fillStyle = 'rgba(79, 179, 255, 0.12)';
+        ctx.fillRect(this.pad, y, W - 2 * this.pad, h);
+      }
       if (row.type === 'legend') {
         const L = row.get();
+        const band = L.band || { lo: 0, hi: 1, invert: false };
+        ctx.textAlign = 'left';
         ctx.fillStyle = '#9fdcff';
         ctx.font = 'bold 40px system-ui, sans-serif';
-        ctx.textAlign = 'left';
-        ctx.fillText(L.name, this.pad + 8, y + 26, W - 2 * this.pad);
-        drawGradient(ctx, this.pad + 8, y + 58, W - 2 * this.pad - 16, 26, L.band);
-        ctx.font = '28px system-ui, sans-serif';
-        ctx.fillStyle = '#f2f4f8';
-        ctx.fillText(L.minText, this.pad + 8, y + 104);
+        ctx.fillText(L.name, this.pad + 8, y + 28, W - 2 * this.pad);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '30px system-ui, sans-serif';
+        const visText = band.invert ? `ukryte: ${L.loText} … ${L.hiText}` : `widoczne: ${L.loText} … ${L.hiText}`;
+        ctx.fillText(visText, this.pad + 8, y + 68, W - 2 * this.pad);
+        const t = this.trackRect(entry);
+        drawBandGradient(ctx, t.x, t.y, t.w, t.h, band);
+        ctx.strokeStyle = '#8894a8';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(t.x, t.y, t.w, t.h);
+        if (row.onBand) {
+          const hotHandle = this.drag?.index === index ? this.drag.handle
+            : rowHot && this.hover.zone === 'track'
+              ? (Math.abs(this.hover.u - band.lo) <= Math.abs(this.hover.u - band.hi) ? 'lo' : 'hi') : null;
+          drawHandle(ctx, t.x + band.lo * t.w, t.y, t.y + t.h, hotHandle === 'lo');
+          drawHandle(ctx, t.x + band.hi * t.w, t.y, t.y + t.h, hotHandle === 'hi');
+        }
+        ctx.font = '26px system-ui, sans-serif';
+        ctx.fillStyle = '#c9d2e0';
+        ctx.fillText(L.minText, t.x, t.y + t.h + 26);
         ctx.textAlign = 'right';
-        ctx.fillText(L.maxText, W - this.pad - 8, y + 104);
+        ctx.fillText(L.maxText, t.x + t.w, t.y + t.h + 26);
         ctx.textAlign = 'left';
         return;
       }
       for (const z of this.zones(entry)) {
         const hot = this.hover && this.hover.index === index && this.hover.zone === z.id;
         const active = row.type === 'buttons' && row.items[z.id].active?.();
-        ctx.fillStyle = hot ? '#4fb3ff' : active ? '#2f6f9f' : '#2a313d';
+        ctx.fillStyle = hot ? '#ffe14d' : active ? '#2f6f9f' : '#2a313d';
         ctx.beginPath();
         ctx.roundRect(z.x, z.y + 4, z.w, z.h - 8, 14);
         ctx.fill();
+        if (hot) {
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 5;
+          ctx.stroke();
+        }
         ctx.fillStyle = hot ? '#04131f' : '#f2f4f8';
         ctx.textAlign = 'center';
         ctx.font = row.type === 'stepper' ? 'bold 44px system-ui, sans-serif' : '32px system-ui, sans-serif';
@@ -156,7 +248,7 @@ export class XRMenu {
       if (row.type === 'stepper') {
         ctx.textAlign = 'left';
         ctx.font = '32px system-ui, sans-serif';
-        ctx.fillStyle = '#c9d2e0';
+        ctx.fillStyle = rowHot ? '#ffffff' : '#c9d2e0';
         ctx.fillText(row.label, this.pad + 8, mid, W - 440);
         ctx.textAlign = 'center';
         ctx.font = 'bold 32px system-ui, sans-serif';
@@ -183,6 +275,7 @@ export class LegendPanel {
     this.last = '';
   }
 
+  /** minText/maxText – granice widocznego zakresu; t – pozycja wartości na całej skali. */
   set({ name, minText, maxText, probeText, status, t, band }) {
     const key = [name, minText, maxText, probeText, status, t?.toFixed(3), band?.lo, band?.hi, band?.invert].join('|');
     if (key === this.last) return;
@@ -198,9 +291,12 @@ export class LegendPanel {
     ctx.fillStyle = '#9fdcff';
     ctx.font = 'bold 34px system-ui, sans-serif';
     ctx.fillText(name, 18, 32, W - 36);
-    drawGradient(ctx, 18, 62, W - 36, 24, band);
+    // Na tabliczce tylko widoczna część skali – cała tęcza = widoczny zakres.
+    const b = band || { lo: 0, hi: 1, invert: false };
+    drawBandGradient(ctx, 18, 62, W - 36, 24, b.invert ? b : { lo: 0, hi: 1, invert: false });
     if (Number.isFinite(t)) {
-      const x = 18 + Math.min(1, Math.max(0, t)) * (W - 36);
+      const ct = b.invert || b.hi - b.lo <= 1e-6 ? t : (t - b.lo) / (b.hi - b.lo);
+      const x = 18 + Math.min(1, Math.max(0, ct)) * (W - 36);
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(x - 3, 56, 6, 36);
     }
