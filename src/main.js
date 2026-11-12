@@ -3,6 +3,8 @@ import { RoomScanner, isImmersiveSupported } from './ar-scanner.js';
 import {
   ScanViewer, FIELD_MODES, FIELD_MODE_NAMES, SIDE_CUTS, SIDE_CUT_NAMES, MAP_AXES, MAP_AXIS_NAMES,
 } from './viewer.js';
+import { SENSOR_KINDS, SENSOR_NAMES, MANUAL_SPEC } from './sensors.js';
+import { formatValue } from './fields.js';
 import { LAYERS, LAYER_NAMES, layerOf, makeDemoScan, scanStats } from './scan-model.js';
 import { listScans, saveScan, deleteScan, getScan, requestPersistence } from './storage.js';
 import {
@@ -127,6 +129,38 @@ function fillSelect(sel, values, names) {
 fillSelect($('#field-mode'), FIELD_MODES, FIELD_MODE_NAMES);
 fillSelect($('#cut-side'), SIDE_CUTS, SIDE_CUT_NAMES);
 fillSelect($('#map-axis'), MAP_AXES, MAP_AXIS_NAMES);
+fillSelect($('#sensor-kind'), SENSOR_KINDS, SENSOR_NAMES);
+
+// Suwaki udawanego Arduino (po jednym na pole).
+const manualInputs = {};
+for (const f of viewer.manualSensor.fields) {
+  const spec = MANUAL_SPEC[f.id];
+  if (!spec) continue;
+  const label = document.createElement('label');
+  label.className = 'field';
+  const out = document.createElement('output');
+  const input = document.createElement('input');
+  Object.assign(input, { type: 'range', min: spec.min, max: spec.max, step: (spec.max - spec.min) / 200 });
+  input.addEventListener('input', () => viewer.manualSensor.setValue(f.id, parseFloat(input.value)));
+  label.append(`${f.name}${f.components === 3 ? ' (długość)' : ''} `, out, input);
+  $('#manual-sliders').append(label);
+  manualInputs[f.id] = { input, out, def: f };
+}
+
+/** Odświeża podgląd strumienia z Arduino (wartości mogą się zmieniać z gogli). */
+function refreshSensorPanel() {
+  if ($('#viewer').hidden) return;
+  const m = viewer.manualSensor;
+  $('#manual-box').hidden = viewer.state.sensorKind !== 'arduino-manual';
+  for (const [id, { input, out, def }] of Object.entries(manualInputs)) {
+    if (document.activeElement !== input) input.value = m.values[id];
+    out.textContent = formatValue(def, m.values[id]);
+  }
+  $('#sensor-rate').textContent = m.connected() ? `Połączono · ${m.status()} · odebrano ${m.packets}` : 'Brak danych';
+  $('#sensor-rate').classList.toggle('on', m.connected());
+  $('#sensor-line').textContent = m.lastLine;
+}
+setInterval(refreshSensorPanel, 250);
 
 // Granice zaokrąglone do kroku suwaka (0,05 m), żeby wartości były "okrągłe".
 function setRange(input, min, max) {
@@ -203,6 +237,8 @@ function syncViewerControls() {
   $('#room-opacity').value = s.roomOpacity;
   $('#room-opacity-out').textContent = `${Math.round(s.roomOpacity * 100)}%`;
 
+  $('#sensor-kind').value = s.sensorKind;
+  refreshSensorPanel();
   $('#cut-top').checked = s.cutTop.on;
   $('#cut-top-h').value = s.cutTop.h;
   $('#cut-top-h').disabled = !s.cutTop.on;
@@ -331,6 +367,7 @@ on('#band-invert', 'change', () => viewer.set({ band: { invert: $('#band-invert'
 on('#band-reset', 'click', () => viewer.set({ band: { lo: 0, hi: 1, invert: false } }));
 on('#point-size', 'input', () => viewer.set({ pointSize: num('#point-size') }));
 on('#voxel-size', 'input', () => viewer.set({ voxelSize: num('#voxel-size') }));
+on('#sensor-kind', 'change', () => viewer.set({ sensorKind: $('#sensor-kind').value }));
 on('#cut-top', 'change', () => viewer.set({ cutTop: { on: $('#cut-top').checked } }));
 on('#cut-top-h', 'input', () => viewer.set({ cutTop: { h: num('#cut-top-h') } }));
 on('#cut-side', 'change', () => {

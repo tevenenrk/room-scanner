@@ -6,7 +6,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomModel, scanBounds } from './scan-model.js';
 import { FieldView, FIELD_MODES, FIELD_MODE_NAMES } from './field-view.js';
-import { MeasurementSet, SimulatedSensor, formatValue, makeDemoMeasurements } from './fields.js';
+import { MeasurementSet, formatValue, makeDemoMeasurements } from './fields.js';
+import { SimulatedSensor, ManualArduinoSensor, MANUAL_SPEC, SENSOR_KINDS, SENSOR_SHORT_NAMES } from './sensors.js';
 import { XRMenu, LegendPanel } from './xr-menu.js';
 
 export const ROOM_MODES = ['solid', 'wire', 'points', 'hidden'];
@@ -37,6 +38,7 @@ function defaultState() {
     measuring: false,
     brush: 0.08,
     dollhouse: false,
+    sensorKind: 'sim',
   };
 }
 
@@ -61,7 +63,10 @@ export class ScanViewer {
     this.model = null;
     this.fieldView = null;
     this.meas = null;
-    this.sensor = null;
+    this.simSensor = null;
+    // Udawane Arduino działa cały czas (jak podłączone urządzenie), wartości z gałki/suwaków.
+    this.manualSensor = new ManualArduinoSensor();
+    this.manualSensor.start();
     this.xr = null; // kontekst aktywnej sesji XR
     this.onChange = null;
     this.onSave = null;
@@ -98,8 +103,8 @@ export class ScanViewer {
     this.content.add(this.model);
 
     this.meas = MeasurementSet.from(scan.measurements);
-    this.sensor = new SimulatedSensor(this.roomBounds);
-    for (const f of this.sensor.fields) this.meas.ensureField(f);
+    this.simSensor = new SimulatedSensor(this.roomBounds);
+    for (const f of [...this.simSensor.fields, ...this.manualSensor.fields]) this.meas.ensureField(f);
     this.savedVersion = this.meas.version;
     this.fieldView = new FieldView(this.clipPlanes);
     this.content.add(this.fieldView);
@@ -114,6 +119,7 @@ export class ScanViewer {
       // ustawienia wyglądu zostają między skanami
       fieldMode: keep.fieldMode, fieldOpacity: keep.fieldOpacity, roomMode: keep.roomMode,
       roomOpacity: keep.roomOpacity, pointSize: keep.pointSize, voxelSize: keep.voxelSize, brush: keep.brush,
+      sensorKind: keep.sensorKind,
       fieldId: this.meas.field(prevField) ? prevField : this.firstFieldWithData(),
       cutTop: { on: true, h: +(b.max.y > 1.6 ? b.max.y - 0.3 : b.max.y + 0.1).toFixed(2) },
       cutSide: { mode: 'off', pos: +c.x.toFixed(2) },
@@ -203,6 +209,18 @@ export class ScanViewer {
 
   fieldDef() { return this.meas?.field(this.state.fieldId); }
 
+  /** Aktywne źródło danych pomiarowych. */
+  get sensor() {
+    return this.state.sensorKind === 'arduino-manual' ? this.manualSensor : this.simSensor;
+  }
+
+  /** Wartość skalarna bieżącego pola z odczytu czujnika (wektor -> długość). */
+  readingValue(reading, fieldId = this.state.fieldId) {
+    const v = reading?.[fieldId];
+    if (v === undefined) return NaN;
+    return Array.isArray(v) ? Math.hypot(...v) : v;
+  }
+
   /** Wartość granicy zakresu ('lo' | 'hi') w jednostkach pola. */
   bandValue(which) {
     const r = this.fieldView.getRange();
@@ -233,6 +251,13 @@ export class ScanViewer {
   }
 
   // --- pomiary -----------------------------------------------------------------
+
+  /** Krok wartości udawanego Arduino (5 % zakresu) dla bieżącego pola. */
+  nudgeManual(sign) {
+    const spec = MANUAL_SPEC[this.state.fieldId];
+    if (!spec || this.state.sensorKind !== 'arduino-manual') return;
+    this.manualSensor.setValue(this.state.fieldId, this.manualSensor.values[this.state.fieldId] + sign * (spec.max - spec.min) * 0.05);
+  }
 
   addDemoMeasurements() {
     const demo = makeDemoMeasurements(this.roomBounds);
@@ -387,6 +412,12 @@ export class ScanViewer {
       { type: 'stepper', label: '  pozycja mapy', value: () => `${s().map.pos.toFixed(1)} m`,
         dec: () => this.set({ map: { pos: +(s().map.pos - 0.1).toFixed(2) } }),
         inc: () => this.set({ map: { pos: +(s().map.pos + 0.1).toFixed(2) } }) },
+      { type: 'stepper', label: 'Czujnik', value: () => SENSOR_SHORT_NAMES[s().sensorKind],
+        dec: () => this.set({ sensorKind: cycle(SENSOR_KINDS, s().sensorKind, -1) }),
+        inc: () => this.set({ sensorKind: cycle(SENSOR_KINDS, s().sensorKind, 1) }) },
+      { type: 'stepper', label: '  wartość z Arduino', value: () => (s().sensorKind === 'arduino-manual'
+        ? formatValue(this.fieldDef(), this.readingValue(this.manualSensor.read())) : '—'),
+        dec: () => this.nudgeManual(-1), inc: () => this.nudgeManual(1) },
       { type: 'stepper', label: 'Wielkość kulki pomiaru', value: () => `${Math.round(s().brush * 100)} cm`,
         dec: () => this.set({ brush: clamp(+(s().brush - 0.02).toFixed(2), 0.02, 0.5) }),
         inc: () => this.set({ brush: clamp(+(s().brush + 0.02).toFixed(2), 0.02, 0.5) }) },
@@ -487,7 +518,7 @@ export class ScanViewer {
     const raycaster = new THREE.Raycaster();
     const rayOrigin = new THREE.Vector3(), rayDir = new THREE.Vector3();
     const poseM = new THREE.Matrix4();
-    const tip = new THREE.Vector3(), tipScan = new THREE.Vector3();
+    const tip = new THREE.Vector3(), tipScan = new THREE.Vector3(), dirScan = new THREE.Vector3();
     const contentInv = new THREE.Matrix4();
     const tmpQ = new THREE.Quaternion();
     const fwd = new THREE.Vector3(), right = new THREE.Vector3(), move = new THREE.Vector3();
@@ -563,8 +594,11 @@ export class ScanViewer {
               moved = true;
               turnArmed = false;
             }
-          } else if (Math.abs(ay) > 0.3 && this.state.measuring) {
-            this.state.brush = clamp(this.state.brush * (1 - ay * dt * 1.2), 0.02, 0.5);
+          } else if (Math.abs(ay) > 0.2) {
+            // Gałka góra/dół: z Arduino (gałka) zmienia wartość pola; z wciśniętym grip – wielkość kulki.
+            const manual = this.state.sensorKind === 'arduino-manual';
+            if (manual && !btn(1)) this.manualSensor.adjust(this.state.fieldId, -ay * dt);
+            else if (this.state.measuring) this.state.brush = clamp(this.state.brush * (1 - ay * dt * 1.2), 0.02, 0.5);
           }
           if (Math.abs(ax) < 0.3) turnArmed = true;
           if (edge('r4', btn(4))) this.set({ fieldMode: cycle(FIELD_MODES, this.state.fieldMode, 1) }); // A
@@ -607,6 +641,9 @@ export class ScanViewer {
         line.matrixWorldNeedsUpdate = true;
         line.visible = src.targetRayMode !== 'screen';
 
+        // Kierunek pilota = oś trzyosiowego czujnika (dla pól wektorowych udawanego Arduino).
+        if (src === primary) this.manualSensor.setDirection(dirScan.copy(rayDir).transformDirection(contentInv));
+
         // Kulka pomiarowa kilka cm przed pilotem.
         const r = this.state.brush;
         tip.copy(rayOrigin).addScaledVector(rayDir, 0.06 + r);
@@ -620,8 +657,9 @@ export class ScanViewer {
           tipScan.copy(tip).applyMatrix4(contentInv);
           const prev = painting.get(src);
           const minStep = Math.max(0.01, r * 0.5) / contentScale;
-          if (!prev || prev.distanceTo(tipScan) >= minStep) {
-            this.meas.add(tipScan, r / contentScale, this.sensor.read(tipScan), now / 1000);
+          const reading = this.sensor.read(tipScan);
+          if (reading && (!prev || prev.distanceTo(tipScan) >= minStep)) {
+            this.meas.add(tipScan, r / contentScale, reading, now / 1000);
             painting.set(src, tipScan.clone());
             this.fieldView.markDirty();
           }
@@ -645,9 +683,13 @@ export class ScanViewer {
           rayOrigin.setFromMatrixPosition(poseM);
           rayDir.set(0, 0, -1).applyQuaternion(tmpQ.setFromRotationMatrix(poseM));
           tip.copy(rayOrigin).addScaledVector(rayDir, 0.06 + this.state.brush).applyMatrix4(contentInv);
-          if (this.state.measuring && def) {
-            const live = this.sensor.read(tip)[def.id];
-            const v = Array.isArray(live) ? Math.hypot(...live) : live;
+          if (this.state.sensorKind === 'arduino-manual') {
+            const reading = this.manualSensor.read();
+            const v = this.readingValue(reading);
+            probeText = reading ? `Arduino: ${formatValue(def, v)}` : 'Arduino: brak danych';
+            t = (v - L.min) / (L.max - L.min);
+          } else if (this.state.measuring && def) {
+            const v = this.readingValue(this.sensor.read(tip));
             probeText = `Czujnik: ${formatValue(def, v)}`;
             t = (v - L.min) / (L.max - L.min);
           } else {
@@ -657,8 +699,11 @@ export class ScanViewer {
           }
         }
       }
+      const manual = this.state.sensorKind === 'arduino-manual';
       const status = now < flashUntil ? flashText
+        : this.state.measuring && manual ? `● Spust = rysuj · gałka ↕ = wartość · grip+gałka = kulka`
         : this.state.measuring ? `● Pomiar: spust = rysuj, kulka ${Math.round(this.state.brush * 100)} cm`
+        : manual ? `Arduino: ${this.manualSensor.status()} · gałka ↕ = wartość`
           : isAR && refMatrix ? (xr.aligned ? 'Wyrównano do pokoju' : 'Szukam pokoju do wyrównania...')
             : `Pomiarów: ${this.meas.count}  ·  Y = menu`;
       legend.set({ name: L.name, minText: L.minText, maxText: L.maxText, probeText, status, t, band: L.band });
@@ -704,6 +749,7 @@ export class ScanViewer {
   }
 
   dispose() {
+    this.manualSensor.stop();
     window.removeEventListener('resize', this._resize);
     this.stop();
     this.controls.dispose();

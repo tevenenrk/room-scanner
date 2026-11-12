@@ -192,3 +192,8 @@ select {
 .band label { display: block; margin-top: 4px; }
 .band input[type=range] { display: block; width: 100%; }
 .small-btn { min-height: 32px; padding: 4px 10px; font-size: 0.85rem; margin-top: 6px; }
+
+.packet { margin-top: 8px; background: #0d1015; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+.packet code { display: block; font-size: 0.72rem; color: #9fdcff; word-break: break-all; min-height: 2.4em; }
+.ok-dot::before { content: "●"; margin-right: 6px; color: var(--muted); }
+.ok-dot.on::before { color: #4be37a; }

@@ -54,7 +54,7 @@
         <li>Zobaczysz siatkę pokoju nałożoną na rzeczywistość. Jeśli jej brak, naciśnij spust (lub zrób szczypnięcie) — gogle poprowadzą Cię przez skanowanie; rozglądaj się powoli po całym pomieszczeniu.</li>
         <li>Naciśnij spust, żeby zapisać skan i wyjść. Skan trafia na listę poniżej.</li>
         <li><b>Odtwórz w VR</b> — stoisz w wirtualnej kopii pokoju. Lewa gałka: chodzenie, prawa: obrót. <b>Y</b>: menu (celuj prawym pilotem, spust = klik), <b>X</b>: następne pole, <b>A</b>: widok pola, <b>B</b>: tryb pomiaru.</li>
-        <li><b>Pomiary</b> — w trybie pomiaru trzymaj spust i „maluj” kulką w powietrzu; prawa gałka góra/dół zmienia wielkość kulki. Na razie wartości pochodzą z symulowanego czujnika.</li>
+        <li><b>Pomiary</b> — w trybie pomiaru trzymaj spust i „maluj” kulką w powietrzu. Źródło danych: <i>Symulacja pól</i> (wartości zależą od miejsca) albo <i>Arduino (gałka)</i> — udawane urządzenie wysyłające pakiety, wartość bieżącego pola zmieniasz prawą gałką góra/dół (z wciśniętym grip gałka zmienia wielkość kulki).</li>
       </ol>
       <p class="muted">Skany zapisywane są w pamięci przeglądarki na tym urządzeniu. Eksportuj je do GLB/PLY, żeby mieć kopię lub otworzyć je w Blenderze, MeshLabie czy CloudCompare.</p>
     </details>
@@ -107,6 +107,23 @@
         <div class="row">
           <button id="btn-demo-meas" title="Dodaje wymyślone pomiary, jakby ktoś machał pilotem po pokoju">+ Symulowane pomiary</button>
           <button id="btn-clear-meas" class="danger">Wyczyść</button>
+        </div>
+      </details>
+
+      <details open class="group">
+        <summary>Czujnik</summary>
+        <label class="field">Źródło danych
+          <select id="sensor-kind"></select>
+        </label>
+        <div id="manual-box">
+          <p class="muted small">Udawane Arduino wysyła pakiety (linie JSON) tak jak prawdziwe urządzenie.
+            Wartości ustawiasz tu albo w goglach prawą gałką (góra/dół, bieżące pole).
+            Kierunek pola magnetycznego = kierunek, w który wskazuje pilot.</p>
+          <div id="manual-sliders"></div>
+          <div class="packet">
+            <div class="small"><span id="sensor-rate" class="ok-dot"></span></div>
+            <code id="sensor-line"></code>
+          </div>
         </div>
       </details>
 

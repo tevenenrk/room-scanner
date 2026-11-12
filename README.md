@@ -74,7 +74,8 @@ Przekroje tną zarówno pokój, jak i pola.
 | **A** (prawy) | następny widok pola |
 | **B** (prawy) | tryb pomiaru wł./wył. |
 | **spust** (w trybie pomiaru) | rysowanie pomiarów kulką w powietrzu |
-| prawa gałka góra/dół (w trybie pomiaru) | wielkość kulki |
+| prawa gałka góra/dół | z Arduino (gałka): wartość bieżącego pola; inaczej (w trybie pomiaru) wielkość kulki |
+| grip + prawa gałka góra/dół | wielkość kulki (przy Arduino) |
 | lewa gałka | chodzenie (VR) |
 | prawa gałka w bok | obrót o 30° (VR) |
 | wciśnięcie lewej gałki | powrót na start (VR) |
@@ -85,26 +86,37 @@ W menu są też: krycie, zakres widocznych wartości (od / do / wytnij), przekro
 na wysokości stołu), zapis i czyszczenie pomiarów. Pomiary zapisują się też automatycznie
 po wyjściu z gogli.
 
-### Podłączenie prawdziwych czujników (Arduino), plan
+### Arduino: tryb symulacji (gałka)
 
-Czujnik musi mieć ten sam interfejs co `SimulatedSensor`:
+W panelu **Czujnik** (na komputerze) albo w menu gogli wybierz źródło **Arduino (symulacja, gałka)**.
+Program dostaje wtedy dane tak, jakby Arduino było już podłączone: udawane urządzenie
+wysyła ok. 20 pakietów na sekundę (linie JSON, opis niżej), a program je parsuje i używa
+ostatniego odczytu. Wartości ustawiasz sam:
 
-```js
-{
-  fields: [{ id: 'wifi', name: 'Sygnał WiFi', unit: 'dBm', components: 1 }, ...],
-  read(position) { return { wifi: -52, mag: [12.1, -40.3, -18.0], ... }; }
-}
+- w goglach **prawa gałka góra/dół** zmienia wartość bieżącego pola (przełączanego **X**),
+  a z wciśniętym **grip** zmienia wielkość kulki,
+- w menu: „wartość z Arduino” ◀ ▶ (skok o 5 % zakresu),
+- na komputerze: suwaki dla każdego pola.
+
+Pole magnetyczne jest wektorem: kierunek to kierunek, w który wskazuje pilot (jak trzyosiowy
+czujnik przymocowany do pilota), a długość ustawiasz gałką. Tabliczka nad lewym pilotem pokazuje
+bieżącą wartość z Arduino, a panel na komputerze pokazuje surowe pakiety i liczbę pakietów na sekundę.
+Jeśli przez ponad sekundę nie przyjdzie żaden pakiet, pomiary się nie zapisują („brak danych”).
+
+### Protokół danych z Arduino
+
+Jedna linia tekstu (zakończona `\n`) = jeden pakiet JSON:
+
+```
+{"fields":[{"id":"wifi","name":"Sygnał WiFi","unit":"dBm","components":1}, ...]}   <- opcjonalnie, na start
+{"t":12345,"wifi":-52.3,"mag":[12.1,-40.3,-18.0],"temp":21.4}                     <- pomiar
 ```
 
-W praktyce: Arduino (np. ESP32 z magnetometrem, czujnikiem temperatury i własnym
-odczytem RSSI WiFi) przypięte do pilota wysyła odczyty kilkadziesiąt razy na sekundę,
-np. przez Bluetooth LE albo WebSocket po WiFi. Klasa czujnika trzyma ostatni odczyt, a
-`read()` go zwraca. Pozycję w pokoju daje pilot, więc wystarczy znać przesunięcie
-czujnika względem pilota.
-
-Na komputerze/telefonie strona działa jako przeglądarka 3D: można otworzyć wyeksportowany
-skan, obejrzeć go myszką i wyeksportować do innych formatów. Jest też **przykładowy pokój**
-do wypróbowania bez gogli.
+`t` to `millis()` z Arduino, wektor zapisuje się jako `[x, y, z]`. Parser to `parseSensorLine`
+w `src/sensors.js`, a `StreamSensor` przyjmuje linie (`ingest(line)`) i trzyma ostatni odczyt.
+Prawdziwe połączenie (np. ESP32 przez Bluetooth LE albo WebSocket po WiFi) ma tylko podawać
+odebrane linie do `ingest()`, a reszta programu zostaje bez zmian. Pozycję pomiaru daje pilot,
+do którego przymocowany jest czujnik.
 
 ## Ograniczenia (ważne)
 
@@ -113,7 +125,7 @@ do wypróbowania bez gogli.
 - **Szczegółowość zależy od Space Setup.** Quest 3S nie ma czujnika głębi, który ma Quest 3,
   więc siatka jest bardziej zgrubna: ściany, meble i większe przedmioty będą, drobiazgi raczej nie.
 - Eksport GLB zawiera tylko pokój. Pomiary są w eksporcie JSON i „PLY pomiarów”.
-- Pomiary są na razie symulowane (patrz wyżej).
+- Pomiary są na razie symulowane (patrz wyżej), prawdziwego połączenia z Arduino jeszcze nie ma.
 - Skany są zapisane w przeglądarce na tym urządzeniu. Wyczyszczenie danych przeglądarki je
   usunie, więc ważne skany eksportuj do GLB/JSON.
 
@@ -145,6 +157,7 @@ src/ar-scanner.js         sesja AR: zbieranie mesh-detection / plane-detection
 src/viewer.js             podgląd 3D + gogle (VR/AR): przekroje, menu, pomiary, lokomocja
 src/fields.js             pomiary, symulowany czujnik, skala kolorów, woksele, interpolacja
 src/field-view.js         wizualizacja pól: kropki, kulki, kostki, strzałki, mapa
+src/sensors.js            źródła danych: symulacja pól, udawane Arduino, protokół JSON
 src/xr-menu.js            menu w goglach (promień + spust) i tabliczka z legendą
 src/scan-model.js         format skanu, kolory, chmura punktów, pokój demo
 src/file-formats.js       eksport/import GLB, PLY, JSON
