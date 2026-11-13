@@ -17,7 +17,9 @@ mebli. Przeglądarka Quest udostępnia go stronom przez WebXR (`mesh-detection`,
 1. **Skanuj pokój**: otwiera tryb AR (obraz z kamer) i na żywo nakłada zebraną siatkę
    na rzeczywistość. Jeśli pokój nie był jeszcze skanowany, spust (albo szczypnięcie)
    uruchamia systemowe skanowanie. Wtedy rozglądasz się powoli po pomieszczeniu.
-2. Spust: **zapisz i wyjdź**. Skan trafia do pamięci przeglądarki (IndexedDB) na goglach.
+2. **Spust**: skan zostaje zapisany i od razu przechodzisz do **pomiarów w tej samej sesji AR**:
+   widzisz prawdziwy pokój z nałożoną siatką i rysujesz pomiary spustem. Ponieważ to ta sama
+   sesja, skan i pomiary są dokładnie na swoim miejscu. **B / Y** zapisuje skan i wychodzi.
 3. **Odtwórz w VR**: stoisz w wirtualnej kopii pokoju, w tym samym miejscu i skali.
 4. **W pokoju (AR)**: skan i pomiary na obrazie z kamer, w prawdziwym pokoju.
    Gogle odnajdują ten sam model pokoju (Space Setup) i dopasowują do niego skan.
@@ -27,6 +29,21 @@ mebli. Przeglądarka Quest udostępnia go stronom przez WebXR (`mesh-detection`,
    - `PLY pomiarów`: pomiary z wartościami wszystkich pól jako osobne „scalar fields”
      (CloudCompare),
    - `JSON`: pełna kopia (pokój + pomiary) do ponownego wczytania.
+
+### Wyrównanie skanu w kolejnych sesjach
+
+Quest przy każdym wejściu do VR/AR ustawia początek układu współrzędnych tam, gdzie akurat
+stoisz, więc bez wyrównania pokój i pomiary pojawiałyby się przesunięte. Aplikacja wyrównuje
+skan automatycznie (w VR i w AR):
+
+1. **wg siatki pokoju**: gogle podają położenie tego samego modelu pokoju (Space Setup), co przy skanowaniu,
+2. **wg granicy (Guardian)**: zapasowo, jeśli strona nie dostanie siatki pokoju,
+3. **ręcznie**: menu → „Dopasuj ręcznie”, potem grip i przesuwasz/obracasz pokój, aż pasuje do
+   rzeczywistości (najwygodniej w AR). „Auto wyrównanie” wraca do automatu.
+
+Stan wyrównania widać na tabliczce nad lewym pilotem. Ostrzeżenie „Skan nie wyrównany” oznacza,
+że trzeba dopasować ręcznie. Skany zrobione przed tą zmianą nie mają zapisanej granicy, więc
+działa dla nich tylko wyrównanie wg siatki albo ręczne.
 
 ## Pomiary pól
 

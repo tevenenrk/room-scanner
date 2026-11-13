@@ -295,15 +295,20 @@ $('#btn-scan').addEventListener('click', async () => {
   if (busy) return;
   busy = true;
   try {
-    const scan = await scanner.start();
+    const { scan, session } = await scanner.start();
     if (!scan) {
       toast('Nie zebrano danych pokoju. Wykonaj Space Setup i zezwól na dostęp do danych przestrzennych.', 8000);
       return;
     }
     await saveScan(scan);
     requestPersistence();
-    toast(`Zapisano: ${scan.name}`);
     showScan(scan);
+    if (session) {
+      // Ta sama sesja AR: od razu pomiary, skan leży dokładnie na prawdziwym pokoju.
+      await viewer.enterXR('immersive-ar', { session, startMeasuring: true });
+      $('#viewer-stats').textContent = `${fmtDate(current.createdAt)}\n${fmtStats(current)}`;
+    }
+    toast(`Zapisano: ${scan.name}`);
   } catch (err) {
     console.error(err);
     toast(`Błąd skanowania: ${err.message || err}`, 8000);

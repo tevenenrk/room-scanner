@@ -38,13 +38,17 @@ export class RoomScanner {
   }
 
   /**
-   * Uruchamia sesję AR. Zwraca Promise ze skanem (albo null, gdy nic nie zebrano)
-   * po zakończeniu sesji. Wywołuj bezpośrednio z obsługi kliknięcia.
+   * Uruchamia sesję AR. Wywołuj bezpośrednio z obsługi kliknięcia.
+   * Zwraca { scan, session }:
+   *  - spust: skan gotowy, sesja ZOSTAJE otwarta (session != null), żeby od razu
+   *    robić pomiary w tym samym układzie współrzędnych,
+   *  - B / Y albo wyjście z gogli: sesja zakończona (session = null).
+   * scan = null, gdy nic nie zebrano.
    */
   async start() {
     const session = await navigator.xr.requestSession('immersive-ar', {
       requiredFeatures: ['local-floor'],
-      optionalFeatures: ['mesh-detection', 'plane-detection', 'hand-tracking'],
+      optionalFeatures: ['mesh-detection', 'plane-detection', 'hand-tracking', 'bounded-floor'],
     });
     const ended = new Promise((resolve) => session.addEventListener('end', resolve, { once: true }));
     const enabled = session.enabledFeatures ? [...session.enabledFeatures] : null;
@@ -52,6 +56,15 @@ export class RoomScanner {
     renderer.xr.enabled = true;
     renderer.xr.setReferenceSpaceType('local-floor');
     await renderer.xr.setSession(session);
+    // Granica (Guardian) – jej początek układu jest stały między sesjami; zapamiętujemy go
+    // jako zapasowy punkt odniesienia do wyrównania skanu w kolejnych sesjach.
+    const boundedSpace = await session.requestReferenceSpace('bounded-floor').catch(() => null);
+    let boundedMatrix = null;
+
+    let finishMode = null; // 'measure' | 'exit'
+    let resolveFinish;
+    const finished = new Promise((r) => { resolveFinish = r; });
+    ended.then(() => { finishMode = finishMode || 'exit'; resolveFinish(); });
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 50);
@@ -91,8 +104,9 @@ export class RoomScanner {
 
     const onSelect = () => {
       if (tracked.size === 0 && !roomCaptureRequested) requestRoomCapture();
-      else session.end();
+      else if (!finishMode) { finishMode = 'measure'; resolveFinish(); }
     };
+    const exitPressed = new Map();
     const onSqueeze = () => requestRoomCapture();
     session.addEventListener('select', onSelect);
     session.addEventListener('squeeze', onSqueeze);
@@ -163,8 +177,8 @@ export class RoomScanner {
       } else {
         lines.push(`Siatki: ${meshes}   Płaszczyzny: ${planes}`);
         lines.push(`Wierzchołki: ${vertices.toLocaleString('pl-PL')}`);
-        lines.push('Spust / szczypnięcie: ZAPISZ i wyjdź');
-        lines.push('Grip: zeskanuj pokój ponownie');
+        lines.push('Spust: ZAPISZ skan i rób pomiary');
+        lines.push('B / Y: zapisz i wyjdź · Grip: skanuj ponownie');
       }
       if (message) lines.push(message);
       panel.setLines(lines);
@@ -197,14 +211,25 @@ export class RoomScanner {
           tracked.delete(item);
         }
       }
+      if (boundedSpace) {
+        const bp = frame.getPose(boundedSpace, ref);
+        if (bp) boundedMatrix = Array.from(bp.transform.matrix);
+      }
+      // B / Y: zapisz i wyjdź z gogli
+      for (const src of session.inputSources) {
+        const down = !!src.gamepad?.buttons[5]?.pressed;
+        if (down && !exitPressed.get(src) && tracked.size) session.end();
+        exitPressed.set(src, down);
+      }
       updatePanel(frame);
       renderer.render(scene, camera);
     });
 
-    await ended;
+    await finished;
     renderer.setAnimationLoop(null);
     session.removeEventListener('select', onSelect);
     session.removeEventListener('squeeze', onSqueeze);
+    const keepSession = finishMode === 'measure' ? session : null;
 
     // Przenosimy wierzchołki do wspólnej przestrzeni 'local-floor'.
     const objects = [];
@@ -222,14 +247,18 @@ export class RoomScanner {
       objects.push({ kind: e.kind, label: e.label, positions, indices: e.local.indices });
     }
     panel.dispose();
-    if (!objects.length) return null;
+    if (!objects.length) {
+      if (keepSession) await session.end();
+      return { scan: null, session: null };
+    }
     const scan = createScan({ source: 'quest', objects });
+    if (boundedMatrix) scan.bounded = { matrix: boundedMatrix };
     // Punkt odniesienia: położenie siatki pokoju (albo podłogi) w tej sesji.
     // W kolejnych sesjach AR gogle podadzą jej nowe położenie, co pozwala
     // nałożyć skan i pomiary dokładnie na prawdziwy pokój.
     const ref = [...tracked.values()].find((e) => e.hasPose && e.label.toLowerCase().includes('global'))
       || [...tracked.values()].find((e) => e.hasPose && e.kind === 'plane' && e.label.toLowerCase().includes('floor'));
     if (ref) scan.reference = { kind: ref.kind, label: ref.label, matrix: Array.from(ref.matrix.elements) };
-    return scan;
+    return { scan, session: keepSession };
   }
 }

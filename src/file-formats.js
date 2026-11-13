@@ -128,6 +128,7 @@ export function exportJSON(scan) {
       indices: toBase64(o.indices),
     })),
     reference: scan.reference || null,
+    bounded: scan.bounded || null,
     measurements: scan.measurements?.count ? {
       fields: scan.measurements.fields,
       count: scan.measurements.count,
@@ -155,6 +156,7 @@ export function importJSON(text) {
   });
   if (data.createdAt) scan.createdAt = data.createdAt;
   if (data.reference) scan.reference = data.reference;
+  if (data.bounded) scan.bounded = data.bounded;
   const m = data.measurements;
   if (m?.count) {
     scan.measurements = {

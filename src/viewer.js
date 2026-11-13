@@ -333,28 +333,50 @@ export class ScanViewer {
 
   /**
    * mode = 'immersive-vr' (wirtualny pokój) albo 'immersive-ar' (nałożony na prawdziwy pokój).
+   * opts.session – już otwarta sesja (prosto ze skanowania): skan jest w jej układzie
+   *   współrzędnych, więc nie trzeba niczego wyrównywać.
+   * opts.startMeasuring – od razu tryb pomiaru.
    */
-  async enterXR(mode = 'immersive-vr') {
+  async enterXR(mode = 'immersive-vr', { session: existing = null, startMeasuring = false } = {}) {
     const renderer = this.renderer;
     const isAR = mode === 'immersive-ar';
-    const session = await navigator.xr.requestSession(mode, {
+    const session = existing || await navigator.xr.requestSession(mode, {
       requiredFeatures: ['local-floor'],
-      optionalFeatures: isAR ? ['hand-tracking', 'mesh-detection', 'plane-detection'] : ['hand-tracking'],
+      optionalFeatures: ['hand-tracking', 'mesh-detection', 'plane-detection', 'bounded-floor'],
     });
     const ended = new Promise((resolve) => session.addEventListener('end', resolve, { once: true }));
-    renderer.xr.enabled = true;
-    renderer.xr.setReferenceSpaceType('local-floor');
-    await renderer.xr.setSession(session);
+    if (!existing) {
+      renderer.xr.enabled = true;
+      renderer.xr.setReferenceSpaceType('local-floor');
+      await renderer.xr.setSession(session);
+    }
 
     const baseRef = renderer.xr.getReferenceSpace();
     const prevBackground = this.scene.background;
-    if (isAR) this.scene.background = null;
+    const prevRoomMode = this.state.roomMode;
+    if (isAR) {
+      this.scene.background = null;
+      // w AR pokój jako siatka, żeby widzieć prawdziwe otoczenie
+      if (this.state.roomMode === 'solid') this.set({ roomMode: 'wire' });
+    }
     this.grid.visible = !isAR;
+    // Granica (Guardian) jako zapasowy punkt odniesienia.
+    const boundedSpace = !existing && this.scan.bounded
+      ? await session.requestReferenceSpace('bounded-floor').catch(() => null) : null;
 
     const xr = {
-      session, isAR, align: null, dollMatrix: null, aligned: false,
+      session, isAR, align: null, dollMatrix: null,
+      // jak skan jest dopasowany do prawdziwego pokoju:
+      // 'session' (ta sama sesja co skanowanie) | 'mesh' | 'bounded' | 'manual' | 'none'
+      alignMode: existing ? 'session' : 'none',
       head: new THREE.Vector3(), headQuat: new THREE.Quaternion(), hasHead: false,
     };
+    const ALIGN_NAMES = {
+      session: 'skan z tej sesji', mesh: 'wg siatki pokoju', bounded: 'wg granicy (Guardian)',
+      manual: 'ręczne', none: 'BRAK – użyj „Dopasuj ręcznie”',
+    };
+    let aligning = false; // tryb ręcznego dopasowania (grip przesuwa/obraca pokój)
+    if (startMeasuring) this.state.measuring = true;
     this.xr = xr;
     const xrCamera = new THREE.PerspectiveCamera(70, 1, 0.02, 200);
     const ui = new THREE.Group(); // elementy interfejsu (bez przycinania)
@@ -449,6 +471,13 @@ export class ScanViewer {
         { label: 'Makieta z góry', active: () => s().dollhouse, onClick: () => toggleDollhouse() },
       ] },
       { type: 'buttons', items: [
+        { label: 'Dopasuj ręcznie', active: () => aligning, onClick: () => {
+          aligning = !aligning;
+          if (aligning) { this.set({ dollhouse: false }); flash('Grip: przesuń/obróć pokój'); }
+        } },
+        { label: 'Auto wyrównanie', onClick: () => { aligning = false; xr.alignMode = 'none'; xr.align = null; this.updateContentMatrix(); } },
+      ] },
+      { type: 'buttons', items: [
         { label: 'Zapisz', onClick: () => { this.save(); flash('Zapisano'); } },
         { label: 'Wyczyść pomiary', onClick: () => clearClicked() },
         { label: 'Schowaj menu', onClick: () => { menu.mesh.visible = false; } },
@@ -463,7 +492,11 @@ export class ScanViewer {
       this.clearMeasurements();
     };
     ui.add(menu.mesh);
-    let menuNeedsPlacement = true;
+    let menuNeedsPlacement = !startMeasuring;
+    if (startMeasuring) {
+      menu.mesh.visible = false;
+      flash('Pomiary: spust = rysuj · Y = menu');
+    }
 
     const legend = new LegendPanel();
     ui.add(legend.mesh);
@@ -574,7 +607,7 @@ export class ScanViewer {
     const grabs = new Set();
     let grabBase = null;
     const onSqueezeStart = (e) => {
-      if (!this.state.dollhouse) return;
+      if (!this.state.dollhouse && !aligning) return;
       grabs.add(e.inputSource);
       grabBase = null; // nowa baza w następnej klatce
     };
@@ -589,6 +622,7 @@ export class ScanViewer {
       return p ? new THREE.Matrix4().fromArray(p.transform.matrix) : null;
     };
     const updateGrab = (frame, ref) => {
+      if (aligning && !this.state.dollhouse && grabs.size) { updateAlignGrab(frame, ref); return; }
       if (!this.state.dollhouse || !xr.dollMatrix || !grabs.size) return;
       const srcs = [...grabs].slice(0, 2);
       const mats = srcs.map((src) => gripMatrix(frame, ref, src));
@@ -616,6 +650,24 @@ export class ScanViewer {
       xr.dollMatrix = D;
       this.updateContentMatrix();
     };
+    // Ręczne dopasowanie skanu do prawdziwego pokoju: przesunięcie w poziomie + obrót wokół pionu.
+    const yawOf = (m) => { const f = new THREE.Vector3(0, 0, -1).transformDirection(m); return Math.atan2(f.x, f.z); };
+    const updateAlignGrab = (frame, ref) => {
+      const src = [...grabs][0];
+      const m = gripMatrix(frame, ref, src);
+      if (!m) return;
+      if (!grabBase) { grabBase = { A0: (xr.align || new THREE.Matrix4()).clone(), mats: [m] }; return; }
+      const p = new THREE.Vector3().setFromMatrixPosition(m);
+      const p0 = new THREE.Vector3().setFromMatrixPosition(grabBase.mats[0]);
+      const dYaw = yawOf(m) - yawOf(grabBase.mats[0]);
+      xr.align = new THREE.Matrix4().makeTranslation(p.x, 0, p.z)
+        .multiply(new THREE.Matrix4().makeRotationY(dYaw))
+        .multiply(new THREE.Matrix4().makeTranslation(-p0.x, 0, -p0.z))
+        .multiply(grabBase.A0);
+      xr.alignMode = 'manual';
+      this.updateContentMatrix();
+    };
+
     // obrót makiety wokół jej środka (prawa gałka w bok)
     const spinDollhouse = (angle) => {
       const c = this.roomBounds.getCenter(new THREE.Vector3()).applyMatrix4(xr.dollMatrix);
@@ -641,6 +693,8 @@ export class ScanViewer {
     const fwd = new THREE.Vector3(), right = new THREE.Vector3(), move = new THREE.Vector3();
     const alignTmp = new THREE.Matrix4();
     const refMatrix = this.scan.reference ? new THREE.Matrix4().fromArray(this.scan.reference.matrix) : null;
+    const refInv = refMatrix ? refMatrix.clone().invert() : null;
+    const boundedInv = this.scan.bounded ? new THREE.Matrix4().fromArray(this.scan.bounded.matrix).invert() : null;
     let frameNo = 0;
 
     renderer.setAnimationLoop((time, frame) => {
@@ -658,19 +712,31 @@ export class ScanViewer {
         xr.hasHead = true;
       }
 
-      // Wyrównanie skanu do prawdziwego pokoju (AR): szukamy tej samej siatki/podłogi.
-      if (isAR && refMatrix && (!xr.aligned || frameNo % 60 === 0)) {
-        const label = this.scan.reference.label.toLowerCase();
-        const items = this.scan.reference.kind === 'plane' ? frame.detectedPlanes : frame.detectedMeshes;
-        if (items) {
-          for (const it of items) {
+      // Wyrównanie skanu do prawdziwego pokoju (VR i AR). Pozycje w układzie bazowym
+      // (bez lokomocji). Najpierw siatka pokoju z Space Setup, potem granica Guardian.
+      const autoAlign = xr.alignMode === 'none' || xr.alignMode === 'bounded' || (xr.alignMode === 'mesh' && frameNo % 60 === 0);
+      if (autoAlign && !aligning) {
+        let found = false;
+        if (refMatrix) {
+          const label = this.scan.reference.label.toLowerCase();
+          const items = this.scan.reference.kind === 'plane' ? frame.detectedPlanes : frame.detectedMeshes;
+          for (const it of items || []) {
             if ((it.semanticLabel || '').toLowerCase() !== label) continue;
-            const p = frame.getPose(it.meshSpace || it.planeSpace, ref);
+            const p = frame.getPose(it.meshSpace || it.planeSpace, baseRef);
             if (!p) continue;
-            xr.align = alignTmp.fromArray(p.transform.matrix).multiply(refMatrix.clone().invert()).clone();
-            xr.aligned = true;
+            xr.align = alignTmp.fromArray(p.transform.matrix).multiply(refInv).clone();
+            xr.alignMode = 'mesh';
+            found = true;
             this.updateContentMatrix();
             break;
+          }
+        }
+        if (!found && boundedSpace && xr.alignMode === 'none') {
+          const p = frame.getPose(boundedSpace, baseRef);
+          if (p) {
+            xr.align = alignTmp.fromArray(p.transform.matrix).multiply(boundedInv).clone();
+            xr.alignMode = 'bounded';
+            this.updateContentMatrix();
           }
         }
       }
@@ -859,11 +925,12 @@ export class ScanViewer {
       const status = now < flashUntil ? flashText
         : holdingPlane ? 'Mapa w ręce · lewy spust = postaw'
         : this.state.dollhouse ? 'Makieta: grip = chwyć (2 ręce = skala)'
+        : aligning ? 'Dopasowanie: grip = przesuń/obróć pokój'
+        : xr.alignMode === 'none' && !this.state.dollhouse ? '⚠ Skan nie wyrównany – menu: Dopasuj ręcznie'
         : this.state.measuring && manual ? `● Spust = rysuj · gałka ↕ = wartość · grip+gałka = kulka`
         : this.state.measuring ? `● Pomiar: spust = rysuj, kulka ${Math.round(this.state.brush * 100)} cm`
         : manual ? `Arduino: ${this.manualSensor.status()} · gałka ↕ = wartość`
-          : isAR && refMatrix ? (xr.aligned ? 'Wyrównano do pokoju' : 'Szukam pokoju do wyrównania...')
-            : `Pomiarów: ${this.meas.count}  ·  Y = menu`;
+        : `Wyrównanie: ${ALIGN_NAMES[xr.alignMode]} · Y = menu`;
       const inv = this.state.band.invert;
       legend.set({ name: L.name, minText: inv ? L.minText : L.loText, maxText: inv ? L.maxText : L.hiText, probeText, status, t, band: L.band });
       // Legenda nad lewym pilotem albo w dolnej części widoku.
@@ -906,6 +973,8 @@ export class ScanViewer {
     this.applyState();
     this.scene.background = prevBackground;
     this.grid.visible = true;
+    if (isAR && this.state.roomMode === 'wire' && prevRoomMode === 'solid') this.state.roomMode = 'solid';
+    this.applyState();
     if (this.hasUnsavedMeasurements()) {
       this.refreshBounds();
       await this.save();
