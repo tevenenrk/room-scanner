@@ -39,10 +39,30 @@ export async function exportGLB(scan) {
     mesh.userData = { kind: obj.kind, label: obj.label };
     scene.add(mesh);
   });
+  let photoMat = null;
+  if (scan.photoMesh?.positions?.length) {
+    const pm = scan.photoMesh;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pm.positions, 3));
+    const lin = new Float32Array(pm.colors.length);
+    const c = new THREE.Color();
+    for (let i = 0; i < lin.length; i += 3) {
+      c.setRGB(pm.colors[i] / 255, pm.colors[i + 1] / 255, pm.colors[i + 2] / 255, THREE.SRGBColorSpace);
+      lin[i] = c.r; lin[i + 1] = c.g; lin[i + 2] = c.b;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(lin, 3));
+    g.setIndex(new THREE.BufferAttribute(pm.indices, 1));
+    photoMat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(g, photoMat);
+    mesh.name = 'photo_mesh';
+    mesh.userData = { kind: 'photo' };
+    scene.add(mesh);
+  }
   scene.userData = { app: 'room-scanner', name: scan.name, createdAt: scan.createdAt };
   const buffer = await new GLTFExporter().parseAsync(scene, { binary: true });
   scene.traverse((o) => o.geometry?.dispose());
   material.dispose();
+  photoMat?.dispose();
   return new Blob([buffer], { type: 'model/gltf-binary' });
 }
 
@@ -52,8 +72,23 @@ export async function importGLB(arrayBuffer, name) {
   root.updateMatrixWorld(true);
   const objects = [];
   const v = new THREE.Vector3();
+  let photoMesh = null;
   root.traverse((node) => {
     if (!node.isMesh || !node.geometry?.attributes.position) return;
+    if (node.userData.kind === 'photo' && node.geometry.attributes.color) {
+      const pa = node.geometry.attributes.position, ca = node.geometry.attributes.color;
+      const positions = new Float32Array(pa.count * 3);
+      const colors = new Uint8Array(pa.count * 3);
+      const p = new THREE.Vector3(), c = new THREE.Color(), out = {};
+      for (let i = 0; i < pa.count; i++) {
+        p.fromBufferAttribute(pa, i).applyMatrix4(node.matrixWorld).toArray(positions, i * 3);
+        c.setRGB(ca.getX(i), ca.getY(i), ca.getZ(i)).getRGB(out, THREE.SRGBColorSpace);
+        colors[i * 3] = Math.round(out.r * 255); colors[i * 3 + 1] = Math.round(out.g * 255); colors[i * 3 + 2] = Math.round(out.b * 255);
+      }
+      const indices = node.geometry.index ? Uint32Array.from(node.geometry.index.array) : Uint32Array.from({ length: pa.count }, (_, i) => i);
+      photoMesh = { positions, indices, colors, coverage: 1, photos: 0, bakedAt: Date.now() };
+      return;
+    }
     const attr = node.geometry.attributes.position;
     const positions = new Float32Array(attr.count * 3);
     for (let i = 0; i < attr.count; i++) {
@@ -69,6 +104,7 @@ export async function importGLB(arrayBuffer, name) {
   });
   if (!objects.length) throw new Error('Plik GLB nie zawiera żadnych siatek.');
   const scan = createScan({ name: root.userData?.name || name, source: 'import', objects });
+  if (photoMesh) scan.photoMesh = photoMesh;
   if (typeof root.userData?.createdAt === 'number') scan.createdAt = root.userData.createdAt;
   return scan;
 }
@@ -114,7 +150,7 @@ function fromBase64(b64, Type) {
   return new Type(bytes.buffer);
 }
 
-export function exportJSON(scan) {
+export async function exportJSON(scan) {
   const data = {
     format: 'room-scanner',
     version: 1,
@@ -137,6 +173,15 @@ export function exportJSON(scan) {
       times: toBase64(scan.measurements.times),
       values: Object.fromEntries(Object.entries(scan.measurements.values).map(([k, v]) => [k, toBase64(v)])),
     } : null,
+    photos: await Promise.all((scan.photos || []).map(async ({ blob, ...rest }) => ({
+      ...rest, jpeg: toBase64(new Uint8Array(await blob.arrayBuffer())),
+    }))),
+    photoMesh: scan.photoMesh ? {
+      ...scan.photoMesh,
+      positions: toBase64(scan.photoMesh.positions),
+      indices: toBase64(scan.photoMesh.indices),
+      colors: toBase64(scan.photoMesh.colors),
+    } : null,
   };
   return new Blob([JSON.stringify(data)], { type: 'application/json' });
 }
@@ -157,6 +202,19 @@ export function importJSON(text) {
   if (data.createdAt) scan.createdAt = data.createdAt;
   if (data.reference) scan.reference = data.reference;
   if (data.bounded) scan.bounded = data.bounded;
+  if (data.photos?.length) {
+    scan.photos = data.photos.map(({ jpeg, ...rest }) => ({
+      ...rest, blob: new Blob([fromBase64(jpeg, Uint8Array)], { type: 'image/jpeg' }),
+    }));
+  }
+  if (data.photoMesh) {
+    scan.photoMesh = {
+      ...data.photoMesh,
+      positions: fromBase64(data.photoMesh.positions, Float32Array),
+      indices: fromBase64(data.photoMesh.indices, Uint32Array),
+      colors: fromBase64(data.photoMesh.colors, Uint8Array),
+    };
+  }
   const m = data.measurements;
   if (m?.count) {
     scan.measurements = {

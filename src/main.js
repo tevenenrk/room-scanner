@@ -6,6 +6,8 @@ import {
 import { SENSOR_KINDS, SENSOR_NAMES, MANUAL_SPEC } from './sensors.js';
 import { formatValue } from './fields.js';
 import { drawBandGradient } from './xr-menu.js';
+import { bakePhotoMesh } from './photo-texture.js';
+import { DEFAULT_VIDEO_FOV_H } from './photo-capture.js';
 import { LAYERS, LAYER_NAMES, layerOf, makeDemoScan, scanStats } from './scan-model.js';
 import { listScans, saveScan, deleteScan, getScan, requestPersistence } from './storage.js';
 import {
@@ -207,7 +209,20 @@ function buildViewerControls() {
 function syncViewerControls() {
   if (!viewer.model) return;
   const s = viewer.state;
-  for (const b of document.querySelectorAll('#mode-seg button')) b.classList.toggle('active', b.dataset.mode === s.roomMode);
+  for (const b of document.querySelectorAll('#mode-seg button')) {
+    b.classList.toggle('active', b.dataset.mode === s.roomMode);
+    if (b.dataset.mode === 'photo') b.disabled = !viewer.model.hasPhotos();
+  }
+  // zdjęcia
+  const photos = current.photos || [];
+  const approx = photos.some((p) => p.approx);
+  $('#photo-info').textContent = photos.length
+    ? `${photos.length}${current.photoMesh ? ` · nałożone (pokrycie ${Math.round(current.photoMesh.coverage * 100)}%)` : ' · jeszcze nie nałożone'}`
+    : 'brak – w goglach: menu → „Zdjęcia auto” lub „Zrób zdjęcie”';
+  $('#photo-fov-row').hidden = !approx;
+  $('#photo-fov-out').textContent = `${$('#photo-fov').value}°`;
+  $('#btn-bake').disabled = !photos.length || baking;
+  $('#btn-del-photos').disabled = !photos.length || baking;
   for (const input of document.querySelectorAll('#layers input')) input.checked = viewer.model.visibleLayers[input.dataset.layer];
 
   $('#field-select').value = s.fieldId ?? '';
@@ -257,6 +272,36 @@ function syncViewerControls() {
 }
 
 viewer.onChange = syncViewerControls;
+
+// --- nakładanie zdjęć na skan -------------------------------------------------
+
+let baking = false;
+async function bakePhotos() {
+  if (baking || !current?.photos?.length) return;
+  baking = true;
+  syncViewerControls();
+  try {
+    const approx = current.photos.some((p) => p.approx);
+    const fovH = approx ? parseFloat($('#photo-fov').value) : null;
+    const scan = current;
+    const pm = await bakePhotoMesh(renderer, scan, { fovH, onProgress: (text) => toast(text, 60000) });
+    scan.photoMesh = pm;
+    await saveScan(scan);
+    if (current === scan) {
+      viewer.rebuildRoom();
+      viewer.set({ roomMode: 'photo' });
+    }
+    toast(`Zdjęcia nałożone: ${pm.photos} zdjęć, pokrycie ${Math.round(pm.coverage * 100)}% siatki.`, 6000);
+  } catch (err) {
+    console.error(err);
+    toast(`Nie udało się nałożyć zdjęć: ${err.message || err}`, 8000);
+  } finally {
+    baking = false;
+    syncViewerControls();
+  }
+}
+viewer.onPhotosAdded = () => bakePhotos();
+$('#photo-fov').value = DEFAULT_VIDEO_FOV_H;
 
 async function openScan(id) {
   const scan = await getScan(id);
@@ -367,6 +412,17 @@ on('#band-invert', 'change', () => viewer.set({ band: { invert: $('#band-invert'
 on('#band-reset', 'click', () => viewer.set({ band: { lo: 0, hi: 1, invert: false } }));
 on('#point-size', 'input', () => viewer.set({ pointSize: num('#point-size') }));
 on('#voxel-size', 'input', () => viewer.set({ voxelSize: num('#voxel-size') }));
+on('#btn-bake', 'click', bakePhotos);
+on('#photo-fov', 'input', () => { $('#photo-fov-out').textContent = `${$('#photo-fov').value}°`; });
+on('#photo-fov', 'change', () => { if (current?.photoMesh) bakePhotos(); });
+on('#btn-del-photos', 'click', async () => {
+  if (!confirm('Usunąć wszystkie zdjęcia i nałożoną teksturę z tego skanu?')) return;
+  current.photos = [];
+  delete current.photoMesh;
+  await saveScan(current);
+  if (viewer.state.roomMode === 'photo') viewer.state.roomMode = 'solid';
+  viewer.rebuildRoom();
+});
 on('#sensor-kind', 'change', () => viewer.set({ sensorKind: $('#sensor-kind').value }));
 on('#cut-top', 'change', () => viewer.set({ cutTop: { on: $('#cut-top').checked } }));
 on('#cut-top-h', 'input', () => viewer.set({ cutTop: { h: num('#cut-top-h') } }));
@@ -423,7 +479,7 @@ on('#exp-meas', 'click', () => {
 });
 on('#exp-json', 'click', async () => {
   if (viewer.hasUnsavedMeasurements()) await viewer.save();
-  downloadBlob(exportJSON(current), `${safeFileName(current.name)}.json`);
+  downloadBlob(await exportJSON(current), `${safeFileName(current.name)}.json`);
 });
 
 on('#btn-rename', 'click', async () => {

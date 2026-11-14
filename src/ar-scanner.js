@@ -48,7 +48,7 @@ export class RoomScanner {
   async start() {
     const session = await navigator.xr.requestSession('immersive-ar', {
       requiredFeatures: ['local-floor'],
-      optionalFeatures: ['mesh-detection', 'plane-detection', 'hand-tracking', 'bounded-floor'],
+      optionalFeatures: ['mesh-detection', 'plane-detection', 'hand-tracking', 'bounded-floor', 'camera-access'],
     });
     const ended = new Promise((resolve) => session.addEventListener('end', resolve, { once: true }));
     const enabled = session.enabledFeatures ? [...session.enabledFeatures] : null;

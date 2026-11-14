@@ -228,6 +228,8 @@ export class RoomModel extends THREE.Group {
       wire: new THREE.MeshBasicMaterial({ ...common, wireframe: true }),
       edges: new THREE.LineBasicMaterial({ vertexColors: true }),
       points: new THREE.PointsMaterial({ vertexColors: true, size: 0.012, sizeAttenuation: true }),
+      // zdjęcia mają już oświetlenie, więc bez cieniowania
+      photo: new THREE.MeshBasicMaterial({ ...common }),
     };
 
     for (const obj of scan.objects) {
@@ -251,8 +253,31 @@ export class RoomModel extends THREE.Group {
       if (edges) this.add(edges);
       this.entries.push({ obj, layer, solid, wire, edges });
     }
+    this.photoMesh = null;
+    if (scan.photoMesh?.positions?.length) this.photoMesh = this.buildPhotoMesh(scan.photoMesh);
     this.apply();
   }
+
+  /** Siatka pokryta kolorami ze zdjęć (wynik bakePhotoMesh). */
+  buildPhotoMesh(pm) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pm.positions, 3));
+    const lin = new Float32Array(pm.colors.length);
+    const c = new THREE.Color();
+    for (let i = 0; i < pm.colors.length; i += 3) {
+      c.setRGB(pm.colors[i] / 255, pm.colors[i + 1] / 255, pm.colors[i + 2] / 255, THREE.SRGBColorSpace);
+      lin[i] = c.r; lin[i + 1] = c.g; lin[i + 2] = c.b;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(lin, 3));
+    g.setIndex(new THREE.BufferAttribute(pm.indices, 1));
+    g.computeBoundingSphere();
+    const mesh = new THREE.Mesh(g, this.materials.photo);
+    mesh.name = 'photo-mesh';
+    this.add(mesh);
+    return mesh;
+  }
+
+  hasPhotos() { return !!this.photoMesh; }
 
   setMode(mode) {
     this.mode = mode;
@@ -305,11 +330,15 @@ export class RoomModel extends THREE.Group {
   }
 
   apply() {
+    const photo = this.mode === 'photo' && this.photoMesh;
+    if (this.photoMesh) this.photoMesh.visible = !!photo;
     for (const e of this.entries) {
-      const on = this.visibleLayers[e.layer];
-      e.solid.visible = on && this.mode === 'solid';
-      e.wire.visible = on && this.mode === 'wire';
-      if (e.edges) e.edges.visible = on && this.mode === 'solid';
+      // w trybie zdjęć: pokryta siatka zamiast pokoju; meble zostają jako krawędzie
+      const on = this.visibleLayers[e.layer] && !(photo && e.layer !== 'objects');
+      const mode = this.mode === 'photo' && !photo ? 'solid' : this.mode; // brak zdjęć -> bryła
+      e.solid.visible = on && mode === 'solid';
+      e.wire.visible = on && mode === 'wire';
+      if (e.edges) e.edges.visible = on && (mode === 'solid' || (photo && e.layer === 'objects'));
     }
     for (const layer of LAYERS) {
       const has = this.entries.some((e) => e.layer === layer);

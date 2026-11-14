@@ -263,6 +263,9 @@ export class SimulatedSensor {
     this._r = new THREE.Vector3();
   }
 
+  /** Odczyty w wielu punktach naraz (paletka z kilkoma kulkami-czujnikami). */
+  readMany(points) { return points.map((p) => this.read(p)); }
+
   read(p) {
     const noise = (a) => (Math.random() - 0.5) * a;
 

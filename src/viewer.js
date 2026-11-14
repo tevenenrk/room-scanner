@@ -9,9 +9,11 @@ import { FieldView, FIELD_MODES, FIELD_MODE_NAMES } from './field-view.js';
 import { MeasurementSet, formatValue, makeDemoMeasurements } from './fields.js';
 import { SimulatedSensor, ManualArduinoSensor, MANUAL_SPEC, SENSOR_KINDS, SENSOR_SHORT_NAMES } from './sensors.js';
 import { XRMenu, LegendPanel } from './xr-menu.js';
+import { PhotoCapture } from './photo-capture.js';
 
-export const ROOM_MODES = ['solid', 'wire', 'points', 'hidden'];
-export const ROOM_MODE_NAMES = { solid: 'Bryła', wire: 'Siatka', points: 'Punkty', hidden: 'Ukryty' };
+export const ROOM_MODES = ['solid', 'wire', 'points', 'photo', 'hidden'];
+export const ROOM_MODE_NAMES = { solid: 'Bryła', wire: 'Siatka', points: 'Punkty', photo: 'Zdjęcia', hidden: 'Ukryty' };
+const MAX_PHOTOS = 150;
 export const SIDE_CUTS = ['off', 'x+', 'x-', 'z+', 'z-'];
 export const SIDE_CUT_NAMES = { off: 'wył.', 'x+': 'X (lewa)', 'x-': 'X (prawa)', 'z+': 'Z (tył)', 'z-': 'Z (przód)' };
 export const MAP_AXES = ['off', 'y', 'x', 'z', 'free'];
@@ -21,6 +23,25 @@ export { FIELD_MODES, FIELD_MODE_NAMES };
 const clamp = THREE.MathUtils.clamp;
 const cycle = (list, cur, d = 1) => list[(list.indexOf(cur) + d + list.length) % list.length];
 const pct = (v) => `${Math.round(v * 100)}%`;
+
+const MAX_BALLS = 91; // 5 pełnych pierścieni
+
+/** Pozycje kulek paletki w układzie heksagonalnym: środek, potem kolejne pierścienie (odstęp 1). */
+export function hexOffsets(n) {
+  const out = [[0, 0]];
+  const dirs = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];
+  for (let k = 1; out.length < n; k++) {
+    let q = -k, r = k; // start: kierunek 4 × k
+    for (let side = 0; side < 6 && out.length < n; side++) {
+      for (let j = 0; j < k && out.length < n; j++) {
+        out.push([q + r / 2, (r * Math.sqrt(3)) / 2]);
+        q += dirs[side][0];
+        r += dirs[side][1];
+      }
+    }
+  }
+  return out.slice(0, n);
+}
 
 function defaultState() {
   return {
@@ -37,6 +58,7 @@ function defaultState() {
     map: { axis: 'off', pos: 1, free: null, size: 1.0, live: false },
     measuring: false,
     brush: 0.08,
+    brushCount: 1, // ile kulek na paletce (układ heksagonalny)
     dollhouse: false,
     sensorKind: 'sim',
   };
@@ -118,7 +140,7 @@ export class ScanViewer {
       ...defaultState(),
       // ustawienia wyglądu zostają między skanami
       fieldMode: keep.fieldMode, fieldOpacity: keep.fieldOpacity, roomMode: keep.roomMode,
-      roomOpacity: keep.roomOpacity, pointSize: keep.pointSize, voxelSize: keep.voxelSize, brush: keep.brush,
+      roomOpacity: keep.roomOpacity, pointSize: keep.pointSize, voxelSize: keep.voxelSize, brush: keep.brush, brushCount: keep.brushCount,
       sensorKind: keep.sensorKind,
       fieldId: this.meas.field(prevField) ? prevField : this.firstFieldWithData(),
       cutTop: { on: true, h: +(b.max.y > 1.6 ? b.max.y - 0.3 : b.max.y + 0.1).toFixed(2) },
@@ -153,6 +175,23 @@ export class ScanViewer {
         this[key] = null;
       }
     }
+  }
+
+  /** Przebudowuje model pokoju (np. po nałożeniu zdjęć). */
+  rebuildRoom() {
+    if (!this.model) return;
+    this.content.remove(this.model);
+    this.model.dispose();
+    this.model = new RoomModel(this.scan);
+    this.model.setClippingPlanes(this.clipPlanes);
+    this.content.add(this.model);
+    this.applyState();
+    this.onChange?.();
+  }
+
+  /** Tryby pokoju dostępne dla tego skanu (Zdjęcia tylko gdy są nałożone). */
+  roomModes() {
+    return ROOM_MODES.filter((m) => m !== 'photo' || this.model?.hasPhotos());
   }
 
   // --- stan widoku -------------------------------------------------------------
@@ -342,7 +381,7 @@ export class ScanViewer {
     const isAR = mode === 'immersive-ar';
     const session = existing || await navigator.xr.requestSession(mode, {
       requiredFeatures: ['local-floor'],
-      optionalFeatures: ['hand-tracking', 'mesh-detection', 'plane-detection', 'bounded-floor'],
+      optionalFeatures: ['hand-tracking', 'mesh-detection', 'plane-detection', 'bounded-floor', 'camera-access'],
     });
     const ended = new Promise((resolve) => session.addEventListener('end', resolve, { once: true }));
     if (!existing) {
@@ -376,6 +415,15 @@ export class ScanViewer {
       manual: 'ręczne', none: 'BRAK – użyj „Dopasuj ręcznie”',
     };
     let aligning = false; // tryb ręcznego dopasowania (grip przesuwa/obraca pokój)
+    // Zdjęcia z kamer gogli (do nałożenia na skan).
+    const photoCap = new PhotoCapture(renderer, session);
+    let photosAuto = false;
+    let photoRequested = false;
+    let photoBusy = false;
+    let photosAdded = 0;
+    let lastPhoto = null; // { pos, quat, t }
+    let pendingPhoto = null;
+    this.scan.photos = this.scan.photos || [];
     if (startMeasuring) this.state.measuring = true;
     this.xr = xr;
     const xrCamera = new THREE.PerspectiveCamera(70, 1, 0.02, 200);
@@ -432,8 +480,8 @@ export class ScanViewer {
         dec: () => this.set({ voxelSize: clamp(+(s().voxelSize - 0.05).toFixed(2), 0.1, 0.6) }),
         inc: () => this.set({ voxelSize: clamp(+(s().voxelSize + 0.05).toFixed(2), 0.1, 0.6) }) },
       { type: 'stepper', label: 'Pokój', value: () => ROOM_MODE_NAMES[s().roomMode],
-        dec: () => this.set({ roomMode: cycle(ROOM_MODES, s().roomMode, -1) }),
-        inc: () => this.set({ roomMode: cycle(ROOM_MODES, s().roomMode, 1) }) },
+        dec: () => this.set({ roomMode: cycle(this.roomModes(), s().roomMode, -1) }),
+        inc: () => this.set({ roomMode: cycle(this.roomModes(), s().roomMode, 1) }) },
       { type: 'stepper', label: 'Krycie pokoju', value: () => pct(s().roomOpacity),
         dec: () => this.set({ roomOpacity: clamp(+(s().roomOpacity - 0.1).toFixed(2), 0.1, 1) }),
         inc: () => this.set({ roomOpacity: clamp(+(s().roomOpacity + 0.1).toFixed(2), 0.1, 1) }) },
@@ -463,12 +511,22 @@ export class ScanViewer {
       { type: 'stepper', label: '  wartość z Arduino', value: () => (s().sensorKind === 'arduino-manual'
         ? formatValue(this.fieldDef(), this.readingValue(this.manualSensor.read())) : '—'),
         dec: () => this.nudgeManual(-1), inc: () => this.nudgeManual(1) },
+      { type: 'stepper', label: 'Kulek na paletce', value: () => `${s().brushCount}`,
+        dec: () => this.set({ brushCount: clamp(s().brushCount - 1, 1, MAX_BALLS) }),
+        inc: () => this.set({ brushCount: clamp(s().brushCount + 1, 1, MAX_BALLS) }) },
       { type: 'stepper', label: 'Wielkość kulki pomiaru', value: () => `${Math.round(s().brush * 100)} cm`,
         dec: () => this.set({ brush: clamp(+(s().brush - 0.02).toFixed(2), 0.02, 0.5) }),
         inc: () => this.set({ brush: clamp(+(s().brush + 0.02).toFixed(2), 0.02, 0.5) }) },
       { type: 'buttons', items: [
         { label: 'Rysuj pomiary', active: () => s().measuring, onClick: () => this.set({ measuring: !s().measuring }) },
         { label: 'Makieta z góry', active: () => s().dollhouse, onClick: () => toggleDollhouse() },
+      ] },
+      { type: 'buttons', items: [
+        { label: 'Zdjęcia auto', active: () => photosAuto, onClick: () => {
+          photosAuto = !photosAuto;
+          flash(photosAuto ? 'Zdjęcia: chodź i rozglądaj się powoli' : `Zdjęć: ${this.scan.photos.length}`);
+        } },
+        { label: 'Zrób zdjęcie', onClick: () => { photoRequested = true; } },
       ] },
       { type: 'buttons', items: [
         { label: 'Dopasuj ręcznie', active: () => aligning, onClick: () => {
@@ -501,14 +559,47 @@ export class ScanViewer {
     const legend = new LegendPanel();
     ui.add(legend.mesh);
 
-    // --- kulka pomiarowa i promienie ---
-    const brush = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 20, 14),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25, depthWrite: false }),
-    );
-    const brushWire = new THREE.Mesh(brush.geometry, new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.5 }));
-    brush.add(brushWire);
+    // --- paletka pomiarowa: kulki (czujniki) w układzie heksagonalnym na końcu pilota ---
+    // Płaszczyzna paletki: oś X pilota i kierunek wskazywania (jak trzymana płasko rakietka).
+    const brush = new THREE.Group();
+    const ballGeom = new THREE.SphereGeometry(1, 16, 12);
+    const ballMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthWrite: false });
+    const balls = new THREE.InstancedMesh(ballGeom, ballMat, MAX_BALLS);
+    const ballWireMat = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.45 });
+    const ballsWire = new THREE.InstancedMesh(ballGeom, ballWireMat, MAX_BALLS);
+    balls.frustumCulled = ballsWire.frustumCulled = false;
+    const plateGeom = new THREE.CircleGeometry(1, 6);
+    plateGeom.rotateX(-Math.PI / 2); // w płaszczyźnie XZ pilota
+    plateGeom.rotateY(Math.PI / 6);
+    const plate = new THREE.Mesh(plateGeom, new THREE.MeshBasicMaterial({
+      color: 0x9fdcff, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false,
+    }));
+    brush.add(plate, balls, ballsWire);
     ui.add(brush);
+    let paddleKey = '';
+    let paddleLocal = []; // pozycje kulek względem środka paletki (układ pilota)
+    let paddleRadius = 0;
+    const updatePaddleShape = () => {
+      const n = this.state.brushCount, r = this.state.brush;
+      const key = `${n}|${r.toFixed(4)}`;
+      if (key === paddleKey) return;
+      paddleKey = key;
+      const spacing = 2 * r * 1.05;
+      const offs = hexOffsets(n);
+      paddleLocal = offs.map(([x, y]) => new THREE.Vector3(x * spacing, 0, -y * spacing));
+      paddleRadius = Math.max(...offs.map(([x, y]) => Math.hypot(x, y))) * spacing + r;
+      const m = new THREE.Matrix4();
+      paddleLocal.forEach((p, i) => {
+        m.makeScale(r, r, r).setPosition(p);
+        balls.setMatrixAt(i, m);
+        ballsWire.setMatrixAt(i, m);
+      });
+      balls.count = ballsWire.count = n;
+      balls.instanceMatrix.needsUpdate = ballsWire.instanceMatrix.needsUpdate = true;
+      plate.scale.setScalar(paddleRadius * 1.08);
+      plate.visible = n > 1;
+      this.manualSensor.channels = n;
+    };
 
     // Promień: cienki walec (lepiej widoczny niż linia 1 px) + kursor w miejscu trafienia w menu.
     const rayGeom = new THREE.CylinderGeometry(0.0018, 0.0018, 1, 6, 1, true);
@@ -741,6 +832,49 @@ export class ScanViewer {
         }
       }
 
+      // Zdjęcia: ręcznie albo automatycznie, gdy głowa przesunęła się/obróciła wystarczająco.
+      if (pose && !photoBusy && !this.state.dollhouse && (photoRequested || photosAuto)) {
+        let due = photoRequested;
+        if (photosAuto && !due) {
+          due = !lastPhoto || (now - lastPhoto.t > 600 && (
+            lastPhoto.pos.distanceTo(xr.head) > 0.35
+            || 2 * Math.acos(Math.min(1, Math.abs(lastPhoto.quat.dot(xr.headQuat)))) > THREE.MathUtils.degToRad(25)));
+        }
+        if (due && this.scan.photos.length >= MAX_PHOTOS) {
+          photosAuto = false;
+          photoRequested = false;
+          flash(`Limit ${MAX_PHOTOS} zdjęć`);
+        } else if (due) {
+          photoRequested = false;
+          photoBusy = true;
+          const scanFromWorld = this.content.matrixWorld.clone().invert();
+          const headNow = { pos: xr.head.clone(), quat: xr.headQuat.clone(), t: now };
+          const take = photoCap.mode ? Promise.resolve(true) : photoCap.start(pose);
+          take.then((ok) => {
+            if (!ok) {
+              photosAuto = false;
+              photoBusy = false;
+              flash(`Brak dostępu do kamery: ${photoCap.error || 'przeglądarka nie udostępnia obrazu'}`);
+              return;
+            }
+            // obraz kamery XR jest dostępny tylko w klatce – zdjęcie w następnej klatce pętli
+            pendingPhoto = { scanFromWorld, headNow };
+          }).catch((err) => { photoBusy = false; flash(`Błąd kamery: ${err?.message || err}`); });
+        }
+      }
+      if (pendingPhoto && pose) {
+        const { scanFromWorld, headNow } = pendingPhoto;
+        pendingPhoto = null;
+        Promise.resolve(photoCap.capture(pose, scanFromWorld)).then((photo) => {
+          if (!photo) return;
+          this.scan.photos.push(photo);
+          photosAdded++;
+          lastPhoto = headNow;
+          flash(`Zdjęcie ${this.scan.photos.length} (${photoCap.mode === 'xr' ? 'kamera XR' : 'kamera wideo'})`);
+        }).catch((err) => flash(`Błąd zdjęcia: ${err?.message || err}`))
+          .finally(() => { photoBusy = false; });
+      }
+
       // Przyciski i gałki.
       let moved = false;
       let primary = null;
@@ -861,24 +995,31 @@ export class ScanViewer {
         // Kierunek pilota = oś trzyosiowego czujnika (dla pól wektorowych udawanego Arduino).
         if (src === primary) this.manualSensor.setDirection(dirScan.copy(rayDir).transformDirection(contentInv));
 
-        // Kulka pomiarowa kilka cm przed pilotem.
+        // Paletka pomiarowa kilka cm przed pilotem (środek paletki = tip).
+        updatePaddleShape();
         const r = this.state.brush;
-        tip.copy(rayOrigin).addScaledVector(rayDir, 0.06 + r);
+        tip.copy(rayOrigin).addScaledVector(rayDir, 0.06 + paddleRadius);
         if (src === primary && this.state.measuring && !this.state.dollhouse && !hit) {
           brush.visible = true;
           brush.position.copy(tip);
-          brush.scale.setScalar(r);
-          brush.material.color.set(painting.has(src) ? 0x7dff9a : 0xffffff);
+          brush.quaternion.copy(tmpQ);
+          const c = painting.has(src) ? 0x7dff9a : 0xffffff;
+          ballMat.color.set(c);
+          ballWireMat.color.set(c);
         }
         if (painting.has(src)) {
           tipScan.copy(tip).applyMatrix4(contentInv);
           const prev = painting.get(src);
           const minStep = Math.max(0.01, r * 0.5) / contentScale;
-          const reading = this.sensor.read(tipScan);
-          if (reading && (!prev || prev.distanceTo(tipScan) >= minStep)) {
-            this.meas.add(tipScan, r / contentScale, reading, now / 1000);
-            painting.set(src, tipScan.clone());
-            this.fieldView.markDirty();
+          if (!prev || prev.distanceTo(tipScan) >= minStep) {
+            // każda kulka = osobny punkt pomiaru
+            const pts = paddleLocal.map((p) => p.clone().applyQuaternion(tmpQ).add(tip).applyMatrix4(contentInv));
+            const readings = this.sensor.readMany(pts);
+            if (readings) {
+              pts.forEach((p, i) => this.meas.add(p, r / contentScale, readings[i], now / 1000));
+              painting.set(src, tipScan.clone());
+              this.fieldView.markDirty();
+            }
           }
         }
       }
@@ -904,7 +1045,7 @@ export class ScanViewer {
           poseM.fromArray(rp.transform.matrix);
           rayOrigin.setFromMatrixPosition(poseM);
           rayDir.set(0, 0, -1).applyQuaternion(tmpQ.setFromRotationMatrix(poseM));
-          tip.copy(rayOrigin).addScaledVector(rayDir, 0.06 + this.state.brush).applyMatrix4(contentInv);
+          tip.copy(rayOrigin).addScaledVector(rayDir, 0.06 + paddleRadius).applyMatrix4(contentInv);
           if (this.state.sensorKind === 'arduino-manual') {
             const reading = this.manualSensor.read();
             const v = this.readingValue(reading);
@@ -928,7 +1069,7 @@ export class ScanViewer {
         : aligning ? 'Dopasowanie: grip = przesuń/obróć pokój'
         : xr.alignMode === 'none' && !this.state.dollhouse ? '⚠ Skan nie wyrównany – menu: Dopasuj ręcznie'
         : this.state.measuring && manual ? `● Spust = rysuj · gałka ↕ = wartość · grip+gałka = kulka`
-        : this.state.measuring ? `● Pomiar: spust = rysuj, kulka ${Math.round(this.state.brush * 100)} cm`
+        : this.state.measuring ? `● Pomiar: spust = rysuj · ${this.state.brushCount} × ${Math.round(this.state.brush * 100)} cm`
         : manual ? `Arduino: ${this.manualSensor.status()} · gałka ↕ = wartość`
         : `Wyrównanie: ${ALIGN_NAMES[xr.alignMode]} · Y = menu`;
       const inv = this.state.band.invert;
@@ -954,13 +1095,18 @@ export class ScanViewer {
     session.removeEventListener('selectend', onSelectEnd);
     session.removeEventListener('squeezestart', onSqueezeStart);
     session.removeEventListener('squeezeend', onSqueezeEnd);
+    photoCap.dispose();
     if (holdingPlane) { holdingPlane = false; this.state.map = { ...this.state.map, live: false }; }
     this.scene.remove(ui);
     menu.dispose();
     legend.dispose();
-    brush.geometry.dispose();
-    brush.material.dispose();
-    brushWire.material.dispose();
+    ballGeom.dispose();
+    ballMat.dispose();
+    ballWireMat.dispose();
+    balls.dispose();
+    ballsWire.dispose();
+    plateGeom.dispose();
+    plate.material.dispose();
     rayGeom.dispose();
     cursorRing.dispose();
     cursorDot.dispose();
@@ -975,10 +1121,11 @@ export class ScanViewer {
     this.grid.visible = true;
     if (isAR && this.state.roomMode === 'wire' && prevRoomMode === 'solid') this.state.roomMode = 'solid';
     this.applyState();
-    if (this.hasUnsavedMeasurements()) {
+    if (this.hasUnsavedMeasurements() || photosAdded) {
       this.refreshBounds();
       await this.save();
     }
+    if (photosAdded) this.onPhotosAdded?.(photosAdded);
     this.onChange?.();
     this.resize();
     if (this.model) this.startDesktopLoop();

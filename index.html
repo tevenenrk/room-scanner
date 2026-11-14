@@ -147,7 +147,18 @@
           <button data-mode="solid">Bryła</button>
           <button data-mode="wire">Siatka</button>
           <button data-mode="points">Punkty</button>
+          <button data-mode="photo">Zdjęcia</button>
           <button data-mode="hidden">Ukryj</button>
+        </div>
+        <div id="photo-box" class="photo-box">
+          <div class="small"><b>Zdjęcia z gogli:</b> <span id="photo-info"></span></div>
+          <label class="field" id="photo-fov-row">Kąt widzenia kamery (korekta) <output id="photo-fov-out"></output>
+            <input type="range" id="photo-fov" min="50" max="110" step="1" value="80">
+          </label>
+          <div class="row">
+            <button id="btn-bake" title="Nakłada zdjęcia na siatkę pokoju (tryb Zdjęcia)">Nałóż zdjęcia</button>
+            <button id="btn-del-photos" class="danger">Usuń zdjęcia</button>
+          </div>
         </div>
         <label class="field">Krycie pokoju <output id="room-opacity-out"></output>
           <input type="range" id="room-opacity" min="0.1" max="1" step="0.05">

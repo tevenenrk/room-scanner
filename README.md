@@ -75,6 +75,19 @@ zawężasz widoczny zakres. Wartości spoza niego znikają, a cała tęcza zosta
 co zostało, więc im węższy zakres, tym dokładniej widać różnice. Opcja **„Wytnij ten zakres”**
 działa odwrotnie: ukrywa wybrany fragment, a reszta zostaje w pełnej skali.
 
+### Paletka pomiarowa
+
+Zamiast jednej kulki na końcu pilota może być **paletka z wieloma kulkami** (każda kulka to
+osobny czujnik i osobny punkt pomiaru). W menu gogli:
+
+- **Kulek na paletce** ◀ ▶: każda nowa kulka dokłada się w układzie heksagonalnym
+  (1 → 7 to pełny pierwszy pierścień, 19 → drugi, 37 → trzeci, do 91), więc paletka rośnie,
+- **Wielkość kulki pomiaru**: rozmiar kulek, a odstęp między nimi rośnie razem z nimi.
+
+Paletka leży płasko wzdłuż pilota (jak rakietka) i obraca się razem z nadgarstkiem. Jedno
+przeciągnięcie spustem zapisuje pomiar z każdej kulki, więc szybko pokrywasz duży obszar.
+Udawane Arduino wysyła wtedy osobną wartość dla każdej kulki (z lekkim rozrzutem jak w prawdziwych czujnikach).
+
 ### Przekroje
 
 - **Utnij dach** na dowolnej wysokości (widok z góry: przycisk „Z góry” na komputerze,
@@ -143,7 +156,11 @@ Jedna linia tekstu (zakończona `\n`) = jeden pakiet JSON:
 ```
 {"fields":[{"id":"wifi","name":"Sygnał WiFi","unit":"dBm","components":1}, ...]}   <- opcjonalnie, na start
 {"t":12345,"wifi":-52.3,"mag":[12.1,-40.3,-18.0],"temp":21.4}                     <- pomiar
+{"t":12345,"wifi":-52.3,...,"s":[{"wifi":-51.8,"temp":21.4},{"wifi":-53.0},...]}   <- paletka
 ```
+
+`s` (opcjonalne) to odczyty z wielu czujników paletki, w kolejności kulek: środek, potem
+kolejne pierścienie heksagonu. Brakujące pola biorą wartość z części głównej pakietu.
 
 `t` to `millis()` z Arduino, wektor zapisuje się jako `[x, y, z]`. Parser to `parseSensorLine`
 w `src/sensors.js`, a `StreamSensor` przyjmuje linie (`ingest(line)`) i trzyma ostatni odczyt.
@@ -151,21 +168,43 @@ Prawdziwe połączenie (np. ESP32 przez Bluetooth LE albo WebSocket po WiFi) ma 
 odebrane linie do `ingest()`, a reszta programu zostaje bez zmian. Pozycję pomiaru daje pilot,
 do którego przymocowany jest czujnik.
 
+## Zdjęcia na skanie (tekstura)
+
+W goglach (najlepiej w AR, np. zaraz po skanowaniu) w menu:
+
+- **Zdjęcia auto**: zdjęcie robi się samo, gdy przejdziesz ok. 35 cm albo obrócisz głowę o ok. 25°
+  (do 150 zdjęć). Chodź i rozglądaj się powoli po całym pokoju,
+- **Zrób zdjęcie**: pojedyncze zdjęcie.
+
+Po wyjściu z gogli zdjęcia są automatycznie **nakładane na siatkę pokoju**, a tryb pokoju zmienia
+się na **Zdjęcia**:
+
+1. siatka jest dzielona na małe trójkąty (ok. 5 cm),
+2. dla każdego zdjęcia liczona jest mapa głębi, więc miejsca zasłonięte (np. podłoga za
+   stołem) nie dostają złego koloru,
+3. każdy punkt bierze kolor ze zdjęć, które widziały go najbardziej na wprost i z bliska (mieszanie 3 najlepszych).
+
+Miejsca, których nie widziało żadne zdjęcie, zostają szare. Na komputerze w sekcji **Pokój** są
+przyciski „Nałóż zdjęcia” (ponownie) i „Usuń zdjęcia”. Gdy przeglądarka daje tylko zwykły obraz
+z kamery (getUserMedia), kąt widzenia kamery jest przybliżony; jeśli kolory „rozjeżdżają się” z
+geometrią, popraw suwak **Kąt widzenia kamery**, a zdjęcia nałożą się ponownie.
+
 ## Ograniczenia (ważne)
 
-- **Brak kolorów/tekstur ze zdjęć.** WebXR nie daje stronom obrazu z kamer gogli, więc
-  model jest kolorowany umownie: wysokością i typem obiektu (ściana, stół, kanapa...).
+- **Zdjęcia zależą od przeglądarki.** Czy strona dostanie obraz z kamer gogli (WebXR
+  camera-access albo getUserMedia), zależy od wersji Quest Browser; jeśli nie, aplikacja
+  pokaże komunikat „Brak dostępu do kamery”, a model zostaje kolorowany umownie.
 - **Szczegółowość zależy od Space Setup.** Quest 3S nie ma czujnika głębi, który ma Quest 3,
   więc siatka jest bardziej zgrubna: ściany, meble i większe przedmioty będą, drobiazgi raczej nie.
-- Eksport GLB zawiera tylko pokój. Pomiary są w eksporcie JSON i „PLY pomiarów”.
+- Eksport GLB zawiera pokój (z kolorami ze zdjęć, jeśli są nałożone). Pomiary są w eksporcie JSON i „PLY pomiarów”.
 - Pomiary są na razie symulowane (patrz wyżej), prawdziwego połączenia z Arduino jeszcze nie ma.
 - Skany są zapisane w przeglądarce na tym urządzeniu. Wyczyszczenie danych przeglądarki je
   usunie, więc ważne skany eksportuj do GLB/JSON.
 
 Jeśli zależy Ci na **fotorealistycznej** kopii pokoju, Meta ma do tego własną aplikację
-**Hyperscape Capture** (Quest 3 / 3S; sprawdź, czy jest dostępna w Twoim regionie).
-Kolorową wersję tej aplikacji też da się zrobić, ale jako natywną aplikację w Unity z
-Passthrough Camera API i Depth API. To już większy projekt.
+**Hyperscape Capture** (Quest 3 / 3S; sprawdź, czy jest dostępna w Twoim regionie). Hyperscape
+liczy model (Gaussian splatting) na serwerach Meta przez wiele godzin, więc w przeglądarce
+na goglach nie da się tego odtworzyć. Tutaj zdjęcia są nakładane na siatkę Space Setup.
 
 ## Uruchomienie na goglach
 
@@ -191,6 +230,8 @@ src/viewer.js             podgląd 3D + gogle (VR/AR): przekroje, menu, pomiary,
 src/fields.js             pomiary, symulowany czujnik, skala kolorów, woksele, interpolacja
 src/field-view.js         wizualizacja pól: kropki, kulki, kostki, strzałki, mapa
 src/sensors.js            źródła danych: symulacja pól, udawane Arduino, protokół JSON
+src/photo-capture.js      zdjęcia z kamer gogli (WebXR camera-access / getUserMedia)
+src/photo-texture.js      nakładanie zdjęć na siatkę (mapy głębi, wybór najlepszych zdjęć)
 src/xr-menu.js            menu w goglach (promień + spust) i tabliczka z legendą
 src/scan-model.js         format skanu, kolory, chmura punktów, pokój demo
 src/file-formats.js       eksport/import GLB, PLY, JSON
